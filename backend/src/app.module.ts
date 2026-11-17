@@ -6,7 +6,7 @@ import configuration from './config/configuration';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { FactsModule } from './facts/facts.module';
 import { HealthModule } from './health/health.module';
-import { HypothesesModule } from './hypotheses/hypotheses.module';
+import { HypothesisModule } from './hypotheses/hypothesis.module';
 import { LlmModule } from './llm/llm.module';
 import { NewsModule } from './news/news.module';
 
@@ -36,7 +36,7 @@ import { NewsModule } from './news/news.module';
     NewsModule,
     FactsModule,
     AnalysisModule,
-    HypothesesModule,
+    HypothesisModule,
     DashboardModule,
   ],
 })

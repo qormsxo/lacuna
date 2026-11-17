@@ -126,15 +126,17 @@ describe('CrawlService', () => {
       publisher: '연합뉴스',
       publishedAt: null,
       modifiedAt: null,
+      canonicalUrl: article.url,
     };
 
     const service = new CrawlService(
       new FakeArticleCrawlStore(article),
       new FakeHtmlFetcher({
         status: 'success',
+        url: article.url,
         body: '<html></html>',
         finalUrl: article.url,
-        contentType: 'text/html',
+        statusCode: 200,
       }),
       new FakeBodyExtractorRunner({
         status: 'success',
@@ -163,9 +165,10 @@ describe('CrawlService', () => {
       new FakeArticleCrawlStore(article),
       new FakeHtmlFetcher({
         status: 'success',
+        url: article.url,
         body: '<html></html>',
         finalUrl: article.url,
-        contentType: 'text/html',
+        statusCode: 200,
       }),
       new FakeBodyExtractorRunner({
         status: 'failure',
