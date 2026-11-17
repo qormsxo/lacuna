@@ -1,0 +1,19 @@
+{
+  "name": "lacuna",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint",
+    "dev:backend": "npm --prefix backend run start:dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "test:backend": "npm --prefix backend test",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.94.0",
+    "oxlint": "1.94.0"
+  }
+}
