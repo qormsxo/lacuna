@@ -5,6 +5,7 @@ import { AnalysisModule } from './analysis/analysis.module';
 import configuration from './config/configuration';
 import { FactsModule } from './facts/facts.module';
 import { HealthModule } from './health/health.module';
+import { HypothesesModule } from './hypotheses/hypotheses.module';
 import { LlmModule } from './llm/llm.module';
 import { NewsModule } from './news/news.module';
 
@@ -34,6 +35,7 @@ import { NewsModule } from './news/news.module';
     NewsModule,
     FactsModule,
     AnalysisModule,
+    HypothesesModule,
   ],
 })
 export class AppModule {}
