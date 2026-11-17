@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration from './config/configuration';
+import { FactsModule } from './facts/facts.module';
 import { HealthModule } from './health/health.module';
+import { LlmModule } from './llm/llm.module';
 import { NewsModule } from './news/news.module';
 
 @Module({
@@ -26,8 +28,10 @@ import { NewsModule } from './news/news.module';
         logging: configService.getOrThrow<boolean>('database.logging'),
       }),
     }),
+    LlmModule,
     HealthModule,
     NewsModule,
+    FactsModule,
   ],
 })
 export class AppModule {}
