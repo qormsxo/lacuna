@@ -1,76 +1,72 @@
-import { useEffect, useState } from 'react';
-import { fetchRelations, runAnalysis } from '../api/lacuna';
-import type { Relation } from '../api/types';
-import { StatusBadge } from '../components/common/StatusBadge';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import type { AnalysisRunResult } from '../api/lacuna';
+import { fetchRelationsPage, startAnalysis } from '../api/lacuna';
+import type { RelationFactSummary } from '../api/types';
+import { FactGraph } from '../components/graph/FactGraph';
+import { Pager } from '../components/common/Pager';
+import { LabelBadge, StatusBadge } from '../components/common/StatusBadge';
+import { TaskProgress } from '../components/common/TaskProgress';
+import { useAsync } from '../hooks/useAsync';
+import { useBackgroundTask } from '../hooks/useBackgroundTask';
+import { formatDateTimeOr } from '../lib/format';
+import * as labels from '../lib/labels';
 
-type LoadState =
-  | { kind: 'loading' }
-  | { kind: 'ready'; relations: Relation[] }
-  | { kind: 'failed'; message: string };
+const PAGE_SIZE = 30;
+const GRAPH_SIZE = 100;
 
-export function RelationsPage() {
-  const [state, setState] = useState<LoadState>({ kind: 'loading' });
-  const [busy, setBusy] = useState(false);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+type ViewMode = 'list' | 'graph';
 
-  async function reloadRelations() {
-    const relations = await fetchRelations(50);
-    setState({ kind: 'ready', relations });
-  }
+function FactSide(props: { fact: RelationFactSummary | null | undefined; fallbackId: string }) {
+  const { fact, fallbackId } = props;
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const relations = await fetchRelations(50);
-        if (!cancelled) {
-          setState({ kind: 'ready', relations });
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : '관계 목록 로드 실패';
-        if (!cancelled) {
-          setState({ kind: 'failed', message });
-        }
-      }
-    }
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleAnalyze() {
-    setBusy(true);
-    setActionMessage(null);
-
-    try {
-      const result = await runAnalysis(false);
-      await reloadRelations();
-
-      if (result.run.reusedExisting) {
-        setActionMessage(
-          `이전 분석 결과 재사용: 검증 ${result.run.verificationCount}건 / 관계 ${result.run.relationCount}건. 미사용 사실이 없으면 사실 추출을 먼저 하세요.`,
-        );
-        return;
-      }
-
-      setActionMessage(
-        `분석 완료(미사용 사실): 검증 ${result.run.verificationCount}건 / 관계 ${result.run.relationCount}건 (상태 ${result.run.status})`,
-      );
-    } catch (error) {
-      setActionMessage(
-        error instanceof Error ? error.message : '관계·검증 분석 실패',
-      );
-    } finally {
-      setBusy(false);
-    }
+  if (fact === null || fact === undefined) {
+    return <p className="meta">사실 {fallbackId.slice(0, 8)}… (삭제됨)</p>;
   }
 
   return (
-    <section className="page">
+    <div className="relation-fact">
+      <p>{fact.statement}</p>
+      <p className="meta">
+        {fact.publisher ?? '언론사 미상'} ·{' '}
+        <Link to={`/news/${fact.articleId}`}>
+          {fact.articleTitle ?? '기사 보기'}
+        </Link>
+      </p>
+    </div>
+  );
+}
+
+export function RelationsPage() {
+  const [offset, setOffset] = useState(0);
+  const [typeFilter, setTypeFilter] = useState('');
+  const [mode, setMode] = useState<ViewMode>('list');
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+
+  const relations = useAsync(
+    () =>
+      fetchRelationsPage({
+        limit: mode === 'graph' ? GRAPH_SIZE : PAGE_SIZE,
+        offset: mode === 'graph' ? 0 : offset,
+        relationType: typeFilter,
+      }),
+    [offset, typeFilter, mode],
+    '관계 목록 로드 실패',
+  );
+
+  const analysisTask = useBackgroundTask<AnalysisRunResult>({
+    onDone: async (result) => {
+      await relations.reload();
+      setActionMessage(
+        result.run.reusedExisting
+          ? `이전 분석 결과 재사용: 검증 ${result.run.verificationCount}건 / 관계 ${result.run.relationCount}건. 미사용 사실이 없으면 사실 추출을 먼저 하세요.`
+          : `분석 완료(미사용 사실): 검증 ${result.run.verificationCount}건 / 관계 ${result.run.relationCount}건`,
+      );
+    },
+  });
+
+  return (
+    <section className="page page-wide">
       <h1>관계 탐색</h1>
       <p className="lede">
         아직 분석에 안 쓴 승인 사실만 골라 검증·관계를 만듭니다. 사실 추출 후
@@ -86,46 +82,125 @@ export function RelationsPage() {
         <div className="action-row">
           <button
             type="button"
-            disabled={busy}
-            onClick={() => void handleAnalyze()}
+            disabled={analysisTask.view.running}
+            onClick={() => {
+              setActionMessage(null);
+              void analysisTask.start(() => startAnalysis(false));
+            }}
           >
             미사용 사실 관계·검증 분석
           </button>
         </div>
+        <TaskProgress view={analysisTask.view} label="관계·검증 분석" />
         {actionMessage ? <p className="meta">{actionMessage}</p> : null}
       </div>
 
-      {state.kind === 'loading' ? (
+      <div className="panel filter-bar">
+        <div className="segmented" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'list'}
+            className={mode === 'list' ? 'active' : ''}
+            onClick={() => setMode('list')}
+          >
+            목록
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'graph'}
+            className={mode === 'graph' ? 'active' : ''}
+            onClick={() => setMode('graph')}
+          >
+            그래프
+          </button>
+        </div>
+        <label className="inline-select">
+          관계 유형
+          <select
+            value={typeFilter}
+            onChange={(event) => {
+              setOffset(0);
+              setTypeFilter(event.target.value);
+            }}
+          >
+            <option value="">전체</option>
+            {labels.RELATION_TYPE_OPTIONS.map((value) => (
+              <option key={value} value={value}>
+                {labels.relationType(value).label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {relations.state.kind === 'loading' ? (
         <StatusBadge label="불러오는 중..." tone="pending" />
       ) : null}
-      {state.kind === 'failed' ? (
-        <p className="error-text">{state.message}</p>
+      {relations.state.kind === 'failed' ? (
+        <p className="error-text">{relations.state.message}</p>
       ) : null}
 
-      {state.kind === 'ready' ? (
+      {relations.state.kind === 'ready' && mode === 'graph' ? (
+        <>
+          {relations.state.data.total > GRAPH_SIZE ? (
+            <p className="meta">
+              최근 {GRAPH_SIZE}개 관계만 그립니다 (전체 {relations.state.data.total}개).
+            </p>
+          ) : null}
+          <FactGraph relations={relations.state.data.items} />
+        </>
+      ) : null}
+
+      {relations.state.kind === 'ready' && mode === 'list' ? (
         <div className="card-stack">
-          {state.relations.length === 0 ? (
+          {relations.state.data.items.length === 0 ? (
             <p className="meta">
               저장된 관계가 없습니다. 위에서 분석을 실행하세요.
             </p>
           ) : (
-            state.relations.map((relation) => (
-              <article key={relation.id} className="panel">
-                <h2>{relation.relationType}</h2>
+            relations.state.data.items.map((relation) => (
+              <article key={relation.id} className="panel relation-card">
+                <header className="relation-head">
+                  <LabelBadge entry={labels.relationType(relation.relationType)} />
+                  <LabelBadge
+                    entry={labels.uncertainty(relation.uncertainty)}
+                    title="불확실성"
+                  />
+                  {relation.isDirectlyConfirmed ? (
+                    <StatusBadge label="직접 확인" tone="ok" />
+                  ) : null}
+                  {relation.isInferred ? (
+                    <StatusBadge label="추론 포함" tone="pending" />
+                  ) : null}
+                  <span className="meta">
+                    {formatDateTimeOr(relation.analyzedAt)}
+                  </span>
+                </header>
+                <div className="relation-pair">
+                  <FactSide fact={relation.factA} fallbackId={relation.factIdA} />
+                  <span className="relation-arrow" aria-hidden="true">
+                    ↔
+                  </span>
+                  <FactSide fact={relation.factB} fallbackId={relation.factIdB} />
+                </div>
                 <p>{relation.description}</p>
                 <p className="meta">근거: {relation.rationale}</p>
-                <p className="meta">
-                  불확실성 {relation.uncertainty} ·{' '}
-                  {relation.isDirectlyConfirmed ? '직접 확인' : '직접 확인 아님'}{' '}
-                  · {relation.isInferred ? '추론 포함' : '추론 없음'}
-                </p>
-                <p className="meta">
-                  {relation.factIdA.slice(0, 8)}… ↔{' '}
-                  {relation.factIdB.slice(0, 8)}…
-                </p>
+                {relation.alternativeExplanations ? (
+                  <p className="meta">
+                    대안 설명: {relation.alternativeExplanations}
+                  </p>
+                ) : null}
               </article>
             ))
           )}
+          <Pager
+            offset={offset}
+            limit={PAGE_SIZE}
+            total={relations.state.data.total}
+            onChange={setOffset}
+          />
         </div>
       ) : null}
     </section>

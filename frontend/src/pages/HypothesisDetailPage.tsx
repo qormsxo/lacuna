@@ -1,48 +1,36 @@
-import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { fetchHypothesisDetail } from '../api/lacuna';
-import type { HypothesisDetail } from '../api/types';
-import { StatusBadge } from '../components/common/StatusBadge';
+import { LabelBadge, StatusBadge } from '../components/common/StatusBadge';
+import { useAsync } from '../hooks/useAsync';
+import { formatDateTimeOr } from '../lib/format';
+import * as labels from '../lib/labels';
 
-type LoadState =
-  | { kind: 'loading' }
-  | { kind: 'ready'; detail: HypothesisDetail }
-  | { kind: 'failed'; message: string };
+function BulletList(props: { items: string[]; empty: string }) {
+  if (props.items.length === 0) {
+    return <p className="meta">{props.empty}</p>;
+  }
+
+  return (
+    <ul className="bullet-list">
+      {props.items.map((item, index) => (
+        <li key={`${index}-${item}`}>{item}</li>
+      ))}
+    </ul>
+  );
+}
 
 export function HypothesisDetailPage() {
   const { id } = useParams();
-  const [state, setState] = useState<LoadState>({ kind: 'loading' });
-
-  useEffect(() => {
-    const hypothesisId = id;
-
-    if (hypothesisId === undefined) {
-      setState({ kind: 'failed', message: '가설 ID가 없습니다.' });
-      return;
-    }
-
-    let cancelled = false;
-
-    async function load(id: string) {
-      try {
-        const detail = await fetchHypothesisDetail(id);
-        if (!cancelled) {
-          setState({ kind: 'ready', detail });
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : '가설 상세 로드 실패';
-        if (!cancelled) {
-          setState({ kind: 'failed', message });
-        }
+  const { state } = useAsync(
+    () => {
+      if (id === undefined) {
+        return Promise.reject(new Error('가설 ID가 없습니다.'));
       }
-    }
-
-    void load(hypothesisId);
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+      return fetchHypothesisDetail(id);
+    },
+    [id],
+    '가설 상세 로드 실패',
+  );
 
   return (
     <section className="page page-wide">
@@ -59,94 +47,127 @@ export function HypothesisDetailPage() {
 
       {state.kind === 'ready' ? (
         <>
-          <h1>{state.detail.hypothesis.title}</h1>
-          <p className="lede lede-wide">{state.detail.hypothesis.coreClaim}</p>
-          <p className="meta">상태: {state.detail.hypothesis.status}</p>
+          <h1>{state.data.hypothesis.title}</h1>
+          <p className="lede lede-wide">{state.data.hypothesis.coreClaim}</p>
+          <p className="badge-row">
+            <LabelBadge
+              entry={labels.hypothesisStatus(state.data.hypothesis.status)}
+            />
+            <span className="meta">
+              생성 {formatDateTimeOr(state.data.hypothesis.generatedAt)}
+              {state.data.hypothesis.lastReevaluatedAt
+                ? ` · 마지막 재평가 ${formatDateTimeOr(state.data.hypothesis.lastReevaluatedAt)}`
+                : ''}
+            </span>
+          </p>
 
           <div className="hypothesis-detail-grid">
             <div className="panel panel-span-2">
               <h2>도출 과정</h2>
               <p className="detail-prose">
-                {state.detail.hypothesis.derivationProcess}
+                {state.data.hypothesis.derivationProcess}
               </p>
               <p className="meta">
-                사실/추론 구분: {state.detail.hypothesis.factsVersusInference}
+                사실/추론 구분: {state.data.hypothesis.factsVersusInference}
               </p>
+              {state.data.hypothesis.assumptions.length > 0 ? (
+                <>
+                  <h3>전제</h3>
+                  <BulletList
+                    items={state.data.hypothesis.assumptions}
+                    empty="-"
+                  />
+                </>
+              ) : null}
             </div>
 
             <div className="panel">
               <h2>지지 증거</h2>
-              <ul className="plain-list">
-                {state.detail.hypothesis.supportingEvidence.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
+              <BulletList
+                items={state.data.hypothesis.supportingEvidence}
+                empty="없음"
+              />
               <h2>반대 증거</h2>
-              <ul className="plain-list">
-                {state.detail.hypothesis.contradictingEvidence.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
+              <BulletList
+                items={state.data.hypothesis.contradictingEvidence}
+                empty="없음"
+              />
             </div>
 
             <div className="panel">
               <h2>대안 설명 / 불확실성</h2>
-              <ul className="plain-list">
-                {state.detail.hypothesis.alternativeExplanations.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-              <p className="meta">
-                {state.detail.hypothesis.uncertaintyAndLimits}
-              </p>
+              <BulletList
+                items={state.data.hypothesis.alternativeExplanations}
+                empty="없음"
+              />
+              <p className="meta">{state.data.hypothesis.uncertaintyAndLimits}</p>
               <h3>추가 검증 항목</h3>
-              <ul className="plain-list">
-                {state.detail.hypothesis.additionalVerificationItems.map(
-                  (item) => (
-                    <li key={item}>{item}</li>
-                  ),
-                )}
-              </ul>
+              <BulletList
+                items={state.data.hypothesis.additionalVerificationItems}
+                empty="없음"
+              />
             </div>
 
             <div className="panel">
-              <h2>관련 사실</h2>
+              <h2>관련 사실 ({state.data.relatedFacts.length})</h2>
               <ul className="plain-list">
-                {state.detail.relatedFacts.map((fact) => (
+                {state.data.relatedFacts.map((fact) => (
                   <li key={fact.id}>
-                    <strong>{fact.normalizedStatement}</strong>
-                    <p className="meta">{fact.evidenceSentence}</p>
+                    <div>
+                      <strong>{fact.normalizedStatement}</strong>
+                      <blockquote className="evidence">
+                        {fact.evidenceSentence}
+                      </blockquote>
+                      <p className="badge-row">
+                        <LabelBadge entry={labels.factType(fact.factType)} />
+                        <Link to={`/news/${fact.articleId}`}>기사 상세</Link>
+                      </p>
+                    </div>
                   </li>
                 ))}
               </ul>
-              <h2>관련 기사</h2>
+              <h2>관련 기사 ({state.data.relatedArticles.length})</h2>
               <ul className="plain-list">
-                {state.detail.relatedArticles.map((article) => (
+                {state.data.relatedArticles.map((article) => (
                   <li key={article.id}>
-                    <a href={article.url} target="_blank" rel="noreferrer">
-                      {article.title}
-                    </a>
-                    <p className="meta">
-                      {article.publisher ?? '-'} · {article.source}
-                    </p>
+                    <div>
+                      <Link to={`/news/${article.id}`}>{article.title}</Link>
+                      <p className="meta">
+                        {article.publisher ?? '-'} ·{' '}
+                        {labels.newsSource(article.source).label} ·{' '}
+                        <a href={article.url} target="_blank" rel="noreferrer">
+                          원문 ↗
+                        </a>
+                      </p>
+                    </div>
                   </li>
                 ))}
               </ul>
             </div>
 
             <div className="panel">
-              <h2>변경 이력</h2>
-              <ul className="plain-list">
-                {state.detail.statusHistory.map((item) => (
+              <h2>상태 변경 이력</h2>
+              <ol className="timeline">
+                {state.data.statusHistory.map((item) => (
                   <li key={item.id}>
-                    <strong>
-                      {item.fromStatus ?? 'none'} → {item.toStatus}
-                    </strong>
-                    <p className="meta">{item.reason}</p>
-                    <p className="meta">{item.changedAt}</p>
+                    <p className="badge-row">
+                      {item.fromStatus ? (
+                        <>
+                          <LabelBadge
+                            entry={labels.hypothesisStatus(item.fromStatus)}
+                          />
+                          →
+                        </>
+                      ) : (
+                        <span className="meta">생성 →</span>
+                      )}
+                      <LabelBadge entry={labels.hypothesisStatus(item.toStatus)} />
+                    </p>
+                    <p>{item.reason}</p>
+                    <p className="meta">{formatDateTimeOr(item.changedAt)}</p>
                   </li>
                 ))}
-              </ul>
+              </ol>
             </div>
           </div>
         </>

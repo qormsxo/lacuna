@@ -1,21 +1,31 @@
+import type { Tone } from '../../lib/labels';
+
 type StatusBadgeProps = {
   label: string;
-  tone: 'ok' | 'error' | 'pending';
+  tone: Tone;
+  title?: string;
 };
 
-function toneClassName(tone: StatusBadgeProps['tone']): string {
-  switch (tone) {
-    case 'ok':
-      return 'badge badge-ok';
-    case 'error':
-      return 'badge badge-error';
-    case 'pending':
-      return 'badge badge-pending';
-  }
+export function StatusBadge(props: StatusBadgeProps) {
+  const { label, tone, title } = props;
+
+  return (
+    <span className={`badge badge-${tone}`} title={title}>
+      {label}
+    </span>
+  );
 }
 
-export function StatusBadge(props: StatusBadgeProps) {
-  const { label, tone } = props;
-
-  return <span className={toneClassName(tone)}>{label}</span>;
+/** labels.ts의 lookup 결과를 그대로 받아 배지로 그린다. */
+export function LabelBadge(props: {
+  entry: { label: string; tone: Tone };
+  title?: string;
+}) {
+  return (
+    <StatusBadge
+      label={props.entry.label}
+      tone={props.entry.tone}
+      title={props.title}
+    />
+  );
 }

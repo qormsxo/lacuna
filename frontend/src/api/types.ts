@@ -25,6 +25,7 @@ export type DashboardSummary = {
   recentReevaluations: Array<{
     id: string;
     hypothesisId: string;
+    hypothesisTitle: string | null;
     evidenceKind: string;
     summary: string;
     evaluatedAt: string;
@@ -44,6 +45,18 @@ export type Article = {
   bodyExtracted: boolean;
 };
 
+export type ArticleDetail = Article & {
+  normalizedUrl: string;
+  summary: string | null;
+  crawlAttempts: number;
+  bodyStorageMode: string;
+  body: string | null;
+  bodyLength?: number | null;
+  lastError?: string | null;
+  crawledAt?: string | null;
+  author?: string | null;
+};
+
 export type Fact = {
   id: string;
   articleId: string;
@@ -55,6 +68,16 @@ export type Fact = {
   reviewStatus: string;
   sourceUrl: string;
   eventType: string;
+  extractedAt?: string;
+};
+
+export type RelationFactSummary = {
+  id: string;
+  statement: string;
+  articleId: string;
+  articleTitle: string | null;
+  articleUrl: string | null;
+  publisher: string | null;
 };
 
 export type Relation = {
@@ -68,6 +91,10 @@ export type Relation = {
   isDirectlyConfirmed: boolean;
   isInferred: boolean;
   sourceRefs: string[];
+  analyzedAt?: string;
+  alternativeExplanations?: string | null;
+  factA?: RelationFactSummary | null;
+  factB?: RelationFactSummary | null;
 };
 
 export type Hypothesis = {
@@ -126,3 +153,36 @@ export type Verification = {
   sourceIndependence: string;
   comparisonSummary: string;
 };
+
+export type TaskRecord = {
+  id: string;
+  kind: string;
+  status: 'running' | 'completed' | 'failed';
+  startedAt: string;
+  finishedAt: string | null;
+  result: unknown;
+  error: string | null;
+};
+
+export type BackgroundAccepted = { taskId: string; task: TaskRecord };
+
+export type PipelineStepResult = {
+  step: 'extract' | 'analyze' | 'generate' | 'reevaluate';
+  ok: boolean;
+  summary: string;
+};
+
+export type PipelineRunResult = {
+  startedAt: string;
+  finishedAt: string;
+  steps: PipelineStepResult[];
+};
+
+export type PipelineStatus = {
+  autoEnabled: boolean;
+  cron: string;
+  running: boolean;
+  recent: TaskRecord[];
+};
+
+export type Paged<T> = { items: T[]; total: number };

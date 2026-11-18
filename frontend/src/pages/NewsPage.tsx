@@ -8,7 +8,10 @@ import {
   retryCollectFailures,
 } from '../api/lacuna';
 import type { Article } from '../api/types';
-import { StatusBadge } from '../components/common/StatusBadge';
+import { Link } from 'react-router-dom';
+import { LabelBadge, StatusBadge } from '../components/common/StatusBadge';
+import { errorMessage, formatDateTime } from '../lib/format';
+import * as labels from '../lib/labels';
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
@@ -23,34 +26,7 @@ type LoadState =
 
 const SOURCES = ['naver', 'daum', 'google'] as const;
 
-const CRAWL_STATUS_LABEL: Record<string, string> = {
-  pending: '대기 (본문 미크롤)',
-  crawling: '크롤 중',
-  success: '성공',
-  failed: '실패',
-  retry_waiting: '재시도 대기',
-  inaccessible: '접근 불가',
-};
-
-const LIST_CRAWL_STATUSES = [
-  'all',
-  'pending',
-  'success',
-  'failed',
-  'retry_waiting',
-  'inaccessible',
-  'crawling',
-] as const;
-
-function crawlTone(status: string): 'ok' | 'error' | 'pending' {
-  if (status === 'success') {
-    return 'ok';
-  }
-  if (status === 'failed' || status === 'inaccessible') {
-    return 'error';
-  }
-  return 'pending';
-}
+const LIST_CRAWL_STATUSES = ['all', ...labels.CRAWL_STATUS_OPTIONS] as const;
 
 const TITLE_MAX_LENGTH = 28;
 
@@ -59,24 +35,6 @@ function truncateTitle(title: string): string {
     return title;
   }
   return `${title.slice(0, TITLE_MAX_LENGTH).trimEnd()}...`;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, '0');
-}
-
-function formatDateTime(value: string | null | undefined): string | null {
-  if (value === undefined || value === null || value.trim().length === 0) {
-    return null;
-  }
-
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
-    return null;
-  }
-
-  const date = new Date(parsed);
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
 }
 
 function articleDateTime(article: Article): string {
@@ -181,7 +139,7 @@ export function NewsPage() {
         }
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : '기사 목록 로드 실패';
+          errorMessage(error, '기사 목록 로드 실패');
         if (!cancelled) {
           setState({ kind: 'failed', message });
         }
@@ -241,7 +199,7 @@ export function NewsPage() {
       );
     } catch (error) {
       setActionMessage(
-        error instanceof Error ? error.message : '수집 요청 실패',
+        errorMessage(error, '수집 요청 실패'),
       );
     } finally {
       setBusy(false);
@@ -281,6 +239,9 @@ export function NewsPage() {
             continue;
           }
 
+          setActionMessage(
+            `본문 크롤 진행 중… ${category} / ${labels.newsSource(source).label} (지금까지 처리 ${processed}건)`,
+          );
           const result = await crawlPendingArticles(
             remaining,
             source,
@@ -302,7 +263,7 @@ export function NewsPage() {
       );
     } catch (error) {
       setActionMessage(
-        error instanceof Error ? error.message : '크롤 요청 실패',
+        errorMessage(error, '크롤 요청 실패'),
       );
     } finally {
       setBusy(false);
@@ -319,7 +280,7 @@ export function NewsPage() {
       setActionMessage(`수집 실패 재시도: ${result.attempted}건 실행`);
     } catch (error) {
       setActionMessage(
-        error instanceof Error ? error.message : '재시도 요청 실패',
+        errorMessage(error, '재시도 요청 실패'),
       );
     } finally {
       setBusy(false);
@@ -388,7 +349,7 @@ export function NewsPage() {
       );
     } catch (error) {
       setActionMessage(
-        error instanceof Error ? error.message : '기사 삭제 실패',
+        errorMessage(error, '기사 삭제 실패'),
       );
     } finally {
       setBusy(false);
@@ -444,7 +405,7 @@ export function NewsPage() {
                   checked={selectedSources.includes(source)}
                   onChange={() => toggleSource(source)}
                 />
-                {source}
+                {labels.newsSource(source).label}
               </label>
             ))}
           </div>
@@ -549,7 +510,7 @@ export function NewsPage() {
                         void loadPage(1, { source });
                       }}
                     />
-                    {source === 'all' ? '전체' : source}
+                    {source === 'all' ? '전체' : labels.newsSource(source).label}
                   </label>
                 ))}
               </div>
@@ -587,9 +548,7 @@ export function NewsPage() {
                         void loadPage(1, { crawlStatus: status });
                       }}
                     />
-                    {status === 'all'
-                      ? '전체'
-                      : (CRAWL_STATUS_LABEL[status] ?? status)}
+                    {status === 'all' ? '전체' : labels.crawlStatus(status).label}
                   </label>
                 ))}
               </div>
@@ -714,7 +673,7 @@ export function NewsPage() {
                   <th>수집처</th>
                   <th>언론사</th>
                   <th>카테고리</th>
-                  <th>수집시각</th>
+                  <th title="발행 시각이 없으면 수집 시각">발행/수집</th>
                   <th>크롤 상태</th>
                   <th>원문</th>
                 </tr>
@@ -746,15 +705,12 @@ export function NewsPage() {
                         />
                       </td>
                       <td className="title-cell" title={article.title}>
-                        {truncateTitle(article.title)}
+                        <Link to={`/news/${article.id}`}>
+                          {truncateTitle(article.title)}
+                        </Link>
                       </td>
                       <td className="nowrap-cell">
-                        <StatusBadge
-                          label={article.source}
-                          tone={
-                            article.source === 'google' ? 'pending' : 'ok'
-                          }
-                        />
+                        <LabelBadge entry={labels.newsSource(article.source)} />
                       </td>
                       <td className="nowrap-cell">
                         {article.publisher ?? '-'}
@@ -764,13 +720,7 @@ export function NewsPage() {
                         {articleDateTime(article)}
                       </td>
                       <td>
-                        <StatusBadge
-                          label={
-                            CRAWL_STATUS_LABEL[article.crawlStatus] ??
-                            article.crawlStatus
-                          }
-                          tone={crawlTone(article.crawlStatus)}
-                        />
+                        <LabelBadge entry={labels.crawlStatus(article.crawlStatus)} />
                       </td>
                       <td>
                         <a href={article.url} target="_blank" rel="noreferrer">

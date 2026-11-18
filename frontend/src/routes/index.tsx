@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from '../components/layout/AppLayout';
+import { ArticleDetailPage } from '../pages/ArticleDetailPage';
 import { DashboardPage } from '../pages/DashboardPage';
 import { FactsPage } from '../pages/FactsPage';
 import { HypothesesPage } from '../pages/HypothesesPage';
@@ -13,6 +14,7 @@ export function AppRoutes() {
       <Route element={<AppLayout />}>
         <Route index element={<DashboardPage />} />
         <Route path="news" element={<NewsPage />} />
+        <Route path="news/:id" element={<ArticleDetailPage />} />
         <Route path="facts" element={<FactsPage />} />
         <Route path="relations" element={<RelationsPage />} />
         <Route path="hypotheses" element={<HypothesesPage />} />
