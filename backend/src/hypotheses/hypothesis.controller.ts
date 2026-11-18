@@ -33,6 +33,14 @@ import {
   toHypothesisRelatedFactDto,
   toHypothesisStatusHistoryDto,
 } from './hypothesis.mapper';
+import type { BackgroundAccepted } from '../tasks/background';
+import {
+  isBackgroundRequested,
+  runMaybeInBackground,
+} from '../tasks/background';
+import { TaskRunnerService } from '../tasks/task-runner.service';
+import { parseOffset } from '../common/utils/pagination';
+import { isHypothesisStatus } from './constants/hypothesis-status';
 import { HypothesisService } from './hypothesis.service';
 
 @ApiTags('hypotheses')
@@ -41,6 +49,7 @@ export class HypothesisController {
   constructor(
     private readonly hypothesisService: HypothesisService,
     private readonly reevaluationService: HypothesisReevaluationService,
+    private readonly taskRunner: TaskRunnerService,
   ) {}
 
   @Post('generate')
@@ -54,24 +63,39 @@ export class HypothesisController {
     description: 'Comma-separated fact IDs. Defaults to recent accepted facts.',
   })
   @ApiQuery({ name: 'force', required: false, example: 'false' })
+  @ApiQuery({
+    name: 'background',
+    required: false,
+    example: 'true',
+    description: 'true면 즉시 taskId를 반환하고 /tasks/:id로 결과를 조회',
+  })
   @ApiOkResponse({ type: HypothesisGenerationResultDto })
   async generate(
     @Query('factIds') factIdsRaw?: string,
     @Query('force') forceRaw?: string,
-  ): Promise<HypothesisGenerationResultDto> {
+    @Query('background') backgroundRaw?: string,
+  ): Promise<HypothesisGenerationResultDto | BackgroundAccepted> {
     const factIds = this.parseFactIds(factIdsRaw);
     const force = forceRaw === 'true' || forceRaw === '1';
-    const result = await this.hypothesisService.generate(factIds, force);
-    const hypotheses: HypothesisDto[] = [];
 
-    for (const item of result.hypotheses) {
-      hypotheses.push(toHypothesisDto(item));
-    }
+    return runMaybeInBackground(
+      this.taskRunner,
+      isBackgroundRequested(backgroundRaw),
+      'hypotheses.generate',
+      async (): Promise<HypothesisGenerationResultDto> => {
+        const result = await this.hypothesisService.generate(factIds, force);
+        const hypotheses: HypothesisDto[] = [];
 
-    return {
-      run: toHypothesisGenerationRunDto(result.run, result.reusedExisting),
-      hypotheses,
-    };
+        for (const item of result.hypotheses) {
+          hypotheses.push(toHypothesisDto(item));
+        }
+
+        return {
+          run: toHypothesisGenerationRunDto(result.run, result.reusedExisting),
+          hypotheses,
+        };
+      },
+    );
   }
 
   @Post('reevaluate/:articleId')
@@ -131,19 +155,37 @@ export class HypothesisController {
   @Get()
   @ApiOperation({ summary: 'List generated hypotheses' })
   @ApiQuery({ name: 'limit', required: false, example: '20' })
+  @ApiQuery({ name: 'offset', required: false, example: '0' })
+  @ApiQuery({ name: 'status', required: false })
   @ApiOkResponse({ type: HypothesisListResponseDto })
   async list(
     @Query('limit') limitRaw?: string,
+    @Query('offset') offsetRaw?: string,
+    @Query('status') statusRaw?: string,
   ): Promise<HypothesisListResponseDto> {
     const limit = this.parseLimit(limitRaw, 20);
-    const rows = await this.hypothesisService.list(limit);
+    const offset = parseOffset(offsetRaw);
+    const status =
+      statusRaw === undefined || statusRaw.trim().length === 0
+        ? undefined
+        : statusRaw.trim();
+
+    if (status !== undefined && !isHypothesisStatus(status)) {
+      throw new BadRequestException(`Unsupported status: ${status}`);
+    }
+
+    const { rows, total } = await this.hypothesisService.listPaged({
+      limit,
+      offset,
+      status,
+    });
     const hypotheses: HypothesisDto[] = [];
 
     for (const row of rows) {
       hypotheses.push(toHypothesisDto(row));
     }
 
-    return { hypotheses };
+    return { hypotheses, total };
   }
 
   @Get(':id')

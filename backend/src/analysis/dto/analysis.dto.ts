@@ -47,6 +47,26 @@ export class FactVerificationDto {
   analyzedAt!: string;
 }
 
+export class RelationFactSummaryDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  statement!: string;
+
+  @ApiProperty()
+  articleId!: string;
+
+  @ApiPropertyOptional({ nullable: true, type: String })
+  articleTitle!: string | null;
+
+  @ApiPropertyOptional({ nullable: true, type: String })
+  articleUrl!: string | null;
+
+  @ApiPropertyOptional({ nullable: true, type: String })
+  publisher!: string | null;
+}
+
 export class FactRelationDto {
   @ApiProperty()
   id!: string;
@@ -86,6 +106,12 @@ export class FactRelationDto {
 
   @ApiProperty()
   analyzedAt!: string;
+
+  @ApiPropertyOptional({ nullable: true, type: RelationFactSummaryDto })
+  factA?: RelationFactSummaryDto | null;
+
+  @ApiPropertyOptional({ nullable: true, type: RelationFactSummaryDto })
+  factB?: RelationFactSummaryDto | null;
 }
 
 export class AnalysisRunDto {
@@ -148,4 +174,7 @@ export class VerificationListDto {
 export class RelationListDto {
   @ApiProperty({ type: [FactRelationDto] })
   relations!: FactRelationDto[];
+
+  @ApiPropertyOptional({ description: 'total rows matching the filter' })
+  total?: number;
 }

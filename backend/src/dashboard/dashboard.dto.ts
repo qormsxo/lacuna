@@ -55,6 +55,9 @@ export class DashboardReevaluationDto {
   @ApiProperty()
   hypothesisId!: string;
 
+  @ApiPropertyOptional({ nullable: true, type: String })
+  hypothesisTitle!: string | null;
+
   @ApiProperty()
   evidenceKind!: string;
 

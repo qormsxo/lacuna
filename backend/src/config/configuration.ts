@@ -5,6 +5,7 @@ export default () => ({
     prefix: process.env.API_PREFIX ?? 'api',
     version: process.env.API_VERSION ?? '1',
     corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    apiKey: process.env.API_KEY ?? '',
   },
   database: {
     host: process.env.POSTGRES_HOST ?? 'localhost',
@@ -13,6 +14,7 @@ export default () => ({
     password: process.env.POSTGRES_PASSWORD ?? 'lacuna',
     name: process.env.POSTGRES_DB ?? 'lacuna',
     synchronize: process.env.TYPEORM_SYNCHRONIZE === 'true',
+    migrationsRun: process.env.TYPEORM_MIGRATIONS_RUN === 'true',
     logging: process.env.TYPEORM_LOGGING === 'true',
   },
   news: {
@@ -45,6 +47,11 @@ export default () => ({
     model: process.env.LLM_MODEL ?? 'gemini-3.1-flash-lite',
     temperature: Number(process.env.LLM_TEMPERATURE ?? '0'),
     timeoutMs: parseInt(process.env.LLM_TIMEOUT_MS ?? '60000', 10),
+    maxRetries: parseInt(process.env.LLM_MAX_RETRIES ?? '2', 10),
+    retryBaseDelayMs: parseInt(
+      process.env.LLM_RETRY_BASE_DELAY_MS ?? '2000',
+      10,
+    ),
     maxBodyChars: parseInt(process.env.LLM_MAX_BODY_CHARS ?? '12000', 10),
     unmatchedEvidenceMode:
       process.env.LLM_UNMATCHED_EVIDENCE_MODE === 'exclude'
@@ -67,8 +74,21 @@ export default () => ({
       10,
     ),
   },
+  maintenance: {
+    // 서버 1대 기준: 시작 시 남은 running 레코드를 중단된 작업으로 정리한다.
+    // 같은 DB를 여러 프로세스가 쓰면(e2e 테스트, 다중 인스턴스) false로 둔다.
+    recoverOnBoot: process.env.STALE_RECOVERY_ON_BOOT !== 'false',
+  },
+  pipeline: {
+    autoEnabled: process.env.PIPELINE_AUTO_ENABLED === 'true',
+    cron: process.env.PIPELINE_CRON ?? '*/30 * * * *',
+    extractLimit: parseInt(process.env.PIPELINE_EXTRACT_LIMIT ?? '10', 10),
+    reevaluateLimit: parseInt(
+      process.env.PIPELINE_REEVALUATE_LIMIT ?? '10',
+      10,
+    ),
+  },
   logging: {
     dir: process.env.LOG_DIR ?? undefined,
   },
 });
-

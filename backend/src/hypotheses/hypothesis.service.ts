@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
-import { In, Not, Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { FactRelationEntity } from '../analysis/entities/fact-relation.entity';
 import { ExtractedFactEntity } from '../facts/entities/extracted-fact.entity';
 import { LLM_PROVIDER } from '../llm/llm-provider';
@@ -17,6 +17,7 @@ import { NewsArticleEntity } from '../news/entities/news-article.entity';
 import { HypothesisGenerationRunEntity } from './entities/hypothesis-generation-run.entity';
 import { HypothesisStatusHistoryEntity } from './entities/hypothesis-status-history.entity';
 import { HypothesisEntity } from './entities/hypothesis.entity';
+import type { HypothesisStatus } from './constants/hypothesis-status';
 import { evaluateHypothesisCandidate } from './filters/hypothesis-filter';
 import {
   buildHypothesisSystemPrompt,
@@ -97,10 +98,7 @@ export class HypothesisService {
     }
 
     const relatedRelations = await this.relations.find({
-      where: [
-        { factIdA: In(factIds) },
-        { factIdB: In(factIds) },
-      ],
+      where: [{ factIdA: In(factIds) }, { factIdB: In(factIds) }],
       order: { analyzedAt: 'DESC' },
     });
 
@@ -281,6 +279,21 @@ export class HypothesisService {
     });
   }
 
+  async listPaged(options: {
+    limit: number;
+    offset: number;
+    status?: HypothesisStatus;
+  }): Promise<{ rows: HypothesisEntity[]; total: number }> {
+    const [rows, total] = await this.hypotheses.findAndCount({
+      where: options.status === undefined ? {} : { status: options.status },
+      order: { generatedAt: 'DESC' },
+      take: options.limit,
+      skip: options.offset,
+    });
+
+    return { rows, total };
+  }
+
   async getDetail(id: string): Promise<HypothesisDetailResult> {
     const hypothesis = await this.hypotheses.findOne({ where: { id } });
 
@@ -363,40 +376,16 @@ export class HypothesisService {
   private async loadUnusedAcceptedFacts(
     limit: number,
   ): Promise<ExtractedFactEntity[]> {
-    const usedFactIds = await this.collectHypothesizedFactIds();
-
-    if (usedFactIds.size === 0) {
-      return this.facts.find({
-        where: { reviewStatus: 'accepted' },
-        order: { extractedAt: 'DESC' },
-        take: limit,
-      });
-    }
-
-    return this.facts.find({
-      where: {
-        reviewStatus: 'accepted',
-        id: Not(In([...usedFactIds])),
-      },
-      order: { extractedAt: 'DESC' },
-      take: limit,
-    });
-  }
-
-  private async collectHypothesizedFactIds(): Promise<Set<string>> {
-    const runs = await this.runs.find({
-      where: { status: 'completed' },
-      select: ['factIds'],
-    });
-    const used = new Set<string>();
-
-    for (const run of runs) {
-      for (const factId of run.factIds) {
-        used.add(factId);
-      }
-    }
-
-    return used;
+    // 완료된 가설 생성 실행의 factIds(jsonb)에 없는 승인 사실만 DB에서 바로 고른다.
+    return this.facts
+      .createQueryBuilder('fact')
+      .where('fact.reviewStatus = :status', { status: 'accepted' })
+      .andWhere(
+        `NOT EXISTS (SELECT 1 FROM hypothesis_generation_runs run WHERE run.status = 'completed' AND run."factIds" @> jsonb_build_array(fact.id::text))`,
+      )
+      .orderBy('fact.extractedAt', 'DESC')
+      .take(limit)
+      .getMany();
   }
 
   private async loadArticlesForFacts(

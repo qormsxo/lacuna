@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ExtractedFactEntity } from '../facts/entities/extracted-fact.entity';
 import { LLM_PROVIDER } from '../llm/llm-provider';
 import type { LlmProvider } from '../llm/llm-provider';
@@ -19,6 +19,7 @@ import {
   looksLikeRepublishedRelease,
   orderedFactPair,
 } from './candidates/fact-candidate.util';
+import type { RelationType } from './constants/relation-types';
 import { AnalysisRunEntity } from './entities/analysis-run.entity';
 import { FactRelationEntity } from './entities/fact-relation.entity';
 import { FactVerificationEntity } from './entities/fact-verification.entity';
@@ -27,7 +28,10 @@ import {
   buildAnalysisUserPrompt,
 } from './prompts/analysis.prompt';
 import { shouldKeepRelation } from './relations/relation-filter';
-import { LlmRelationItem, LlmVerificationItem } from './schema/llm-analysis-response';
+import {
+  LlmRelationItem,
+  LlmVerificationItem,
+} from './schema/llm-analysis-response';
 import { parseLlmAnalysisResponseJson } from './schema/llm-analysis-response.validator';
 
 export type AnalysisServiceResult = {
@@ -35,6 +39,15 @@ export type AnalysisServiceResult = {
   verifications: FactVerificationEntity[];
   relations: FactRelationEntity[];
   reusedExisting: boolean;
+};
+
+export type FactSummary = {
+  id: string;
+  statement: string;
+  articleId: string;
+  articleTitle: string | null;
+  articleUrl: string | null;
+  publisher: string | null;
 };
 
 @Injectable()
@@ -59,8 +72,7 @@ export class AnalysisService {
     configService: ConfigService,
   ) {
     this.temperature = configService.get<number>('llm.temperature') ?? 0;
-    this.maxFacts =
-      configService.get<number>('analysis.maxFactsPerRun') ?? 40;
+    this.maxFacts = configService.get<number>('analysis.maxFactsPerRun') ?? 40;
   }
 
   async runAnalysis(
@@ -152,7 +164,9 @@ export class AnalysisService {
       const parsed = parseLlmAnalysisResponseJson(completion.content);
 
       if (!parsed.ok) {
-        throw new Error(`LLM analysis schema validation failed: ${parsed.message}`);
+        throw new Error(
+          `LLM analysis schema validation failed: ${parsed.message}`,
+        );
       }
 
       const knownFactIds = new Set(factIds);
@@ -166,7 +180,10 @@ export class AnalysisService {
       let skippedWeakRelationCount = 0;
 
       for (const relation of parsed.data.relations) {
-        if (!knownFactIds.has(relation.factIdA) || !knownFactIds.has(relation.factIdB)) {
+        if (
+          !knownFactIds.has(relation.factIdA) ||
+          !knownFactIds.has(relation.factIdB)
+        ) {
           skippedWeakRelationCount += 1;
           continue;
         }
@@ -195,10 +212,7 @@ export class AnalysisService {
         adjustedVerifications,
         knownFactIds,
       );
-      const savedRelations = await this.persistRelations(
-        run.id,
-        keptRelations,
-      );
+      const savedRelations = await this.persistRelations(run.id, keptRelations);
 
       run.status = 'completed';
       run.model = completion.model;
@@ -276,10 +290,66 @@ export class AnalysisService {
     });
   }
 
+  async listRelationsPaged(options: {
+    limit: number;
+    offset: number;
+    relationType?: RelationType;
+  }): Promise<{ rows: FactRelationEntity[]; total: number }> {
+    const [rows, total] = await this.relations.findAndCount({
+      where:
+        options.relationType === undefined
+          ? {}
+          : { relationType: options.relationType },
+      order: { analyzedAt: 'DESC' },
+      take: options.limit,
+      skip: options.offset,
+    });
+
+    return { rows, total };
+  }
+
+  /** 관계 카드에 사실 문장과 원문 기사를 함께 보여주기 위한 요약 */
+  async loadFactSummaries(
+    factIds: string[],
+  ): Promise<Map<string, FactSummary>> {
+    const summaries = new Map<string, FactSummary>();
+
+    if (factIds.length === 0) {
+      return summaries;
+    }
+
+    const facts = await this.facts.find({
+      where: { id: In([...new Set(factIds)]) },
+      select: ['id', 'articleId', 'normalizedStatement'],
+    });
+    const articleIds = [...new Set(facts.map((fact) => fact.articleId))];
+    const articles =
+      articleIds.length === 0
+        ? []
+        : await this.articles.find({
+            where: { id: In(articleIds) },
+            select: ['id', 'title', 'url', 'publisher'],
+          });
+    const articleById = new Map(articles.map((item) => [item.id, item]));
+
+    for (const fact of facts) {
+      const article = articleById.get(fact.articleId);
+      summaries.set(fact.id, {
+        id: fact.id,
+        statement: fact.normalizedStatement,
+        articleId: fact.articleId,
+        articleTitle: article?.title ?? null,
+        articleUrl: article?.url ?? null,
+        publisher: article?.publisher ?? null,
+      });
+    }
+
+    return summaries;
+  }
+
   countRelations(): Promise<number> {
     return this.relations.count();
   }
-
 
   async getRun(id: string): Promise<AnalysisServiceResult> {
     const run = await this.runs.findOne({ where: { id } });
@@ -370,9 +440,7 @@ export class AnalysisService {
       const article = articleById.get(fact.articleId);
 
       if (article === undefined) {
-        throw new BadRequestException(
-          `Article missing for fact ${fact.id}`,
-        );
+        throw new BadRequestException(`Article missing for fact ${fact.id}`);
       }
 
       bundled.push({ fact, article });
@@ -384,40 +452,17 @@ export class AnalysisService {
   private async loadUnusedAcceptedFacts(
     limit: number,
   ): Promise<ExtractedFactEntity[]> {
-    const usedFactIds = await this.collectAnalyzedFactIds();
-
-    if (usedFactIds.size === 0) {
-      return this.facts.find({
-        where: { reviewStatus: 'accepted' },
-        order: { extractedAt: 'DESC' },
-        take: limit,
-      });
-    }
-
-    return this.facts.find({
-      where: {
-        reviewStatus: 'accepted',
-        id: Not(In([...usedFactIds])),
-      },
-      order: { extractedAt: 'DESC' },
-      take: limit,
-    });
-  }
-
-  private async collectAnalyzedFactIds(): Promise<Set<string>> {
-    const runs = await this.runs.find({
-      where: { status: 'completed', runType: 'full' },
-      select: ['factIds'],
-    });
-    const used = new Set<string>();
-
-    for (const run of runs) {
-      for (const factId of run.factIds) {
-        used.add(factId);
-      }
-    }
-
-    return used;
+    // 완료된 실행의 factIds(jsonb)에 포함되지 않은 승인 사실만 DB에서 바로 고른다.
+    // 예전처럼 모든 실행을 메모리로 읽어 NOT IN 목록을 만들지 않는다.
+    return this.facts
+      .createQueryBuilder('fact')
+      .where('fact.reviewStatus = :status', { status: 'accepted' })
+      .andWhere(
+        `NOT EXISTS (SELECT 1 FROM analysis_runs run WHERE run.status = 'completed' AND run."runType" = 'full' AND run."factIds" @> jsonb_build_array(fact.id::text))`,
+      )
+      .orderBy('fact.extractedAt', 'DESC')
+      .take(limit)
+      .getMany();
   }
 
   private buildRepublishHints(

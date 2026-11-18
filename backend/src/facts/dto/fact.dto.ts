@@ -102,4 +102,7 @@ export class FactExtractionResultDto {
 export class FactListResponseDto {
   @ApiProperty({ type: [ExtractedFactDto] })
   facts!: ExtractedFactDto[];
+
+  @ApiPropertyOptional({ description: 'total rows matching the filter' })
+  total?: number;
 }

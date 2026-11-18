@@ -43,6 +43,12 @@ import {
   CrawlStatusSummaryDto,
 } from './dto/job-status.dto';
 import { CrawlHistoryService } from './jobs/crawl-history.service';
+import type { BackgroundAccepted } from '../tasks/background';
+import {
+  isBackgroundRequested,
+  runMaybeInBackground,
+} from '../tasks/background';
+import { TaskRunnerService } from '../tasks/task-runner.service';
 import { NewsService } from './news.service';
 import { CollectionSchedulerService } from './schedule/collection-scheduler.service';
 
@@ -55,6 +61,7 @@ export class NewsController {
     private readonly crawlService: CrawlService,
     private readonly crawlHistoryService: CrawlHistoryService,
     private readonly collectionSchedulerService: CollectionSchedulerService,
+    private readonly taskRunner: TaskRunnerService,
   ) {}
 
   @Get('categories')
@@ -66,7 +73,7 @@ export class NewsController {
     };
   }
 
-  @Get('collect')
+  @Post('collect')
   @ApiOperation({
     summary: 'Collect news list items for a category from configured sources',
   })
@@ -136,13 +143,20 @@ export class NewsController {
     description:
       'Ignore nextRetryAt and include retry_waiting/inaccessible Google wrappers immediately',
   })
+  @ApiQuery({
+    name: 'background',
+    required: false,
+    example: 'true',
+    description: 'true면 즉시 taskId를 반환하고 /tasks/:id로 결과를 조회',
+  })
   @ApiOkResponse({ type: CrawlRunResponseDto })
   async runCrawl(
     @Query('limit') limitRaw?: string,
     @Query('source') source?: string,
     @Query('category') category?: string,
     @Query('force') forceRaw?: string,
-  ): Promise<CrawlRunResponseDto> {
+    @Query('background') backgroundRaw?: string,
+  ): Promise<CrawlRunResponseDto | BackgroundAccepted> {
     if (source !== undefined && !isNewsSource(source)) {
       throw new BadRequestException(
         `Unsupported source: ${source}. Allowed: ${NEWS_SOURCES.join(', ')}`,
@@ -157,25 +171,32 @@ export class NewsController {
 
     const limit = this.parseLimit(limitRaw, 20, 5000);
     const force = forceRaw === 'true' || forceRaw === '1';
-    const result = await this.crawlService.runBatch(limit, source, {
-      force,
-      category,
-    });
-    const articles: ArticleResponseDto[] = [];
+    return runMaybeInBackground(
+      this.taskRunner,
+      isBackgroundRequested(backgroundRaw),
+      'news.crawl',
+      async (): Promise<CrawlRunResponseDto> => {
+        const result = await this.crawlService.runBatch(limit, source, {
+          force,
+          category,
+        });
+        const articles: ArticleResponseDto[] = [];
 
-    for (const article of result.articles) {
-      articles.push(toArticleResponse(article));
-    }
+        for (const article of result.articles) {
+          articles.push(toArticleResponse(article));
+        }
 
-    return {
-      requested: result.requested,
-      processed: result.processed,
-      succeeded: result.succeeded,
-      failed: result.failed,
-      inaccessible: result.inaccessible,
-      retryWaiting: result.retryWaiting,
-      articles,
-    };
+        return {
+          requested: result.requested,
+          processed: result.processed,
+          succeeded: result.succeeded,
+          failed: result.failed,
+          inaccessible: result.inaccessible,
+          retryWaiting: result.retryWaiting,
+          articles,
+        };
+      },
+    );
   }
 
   @Get('crawl/status')
@@ -228,7 +249,6 @@ export class NewsController {
 
     return { jobs };
   }
-
 
   @Get('articles')
   @ApiOperation({
@@ -287,7 +307,9 @@ export class NewsController {
     const limit = this.parseLimit(limitRaw, 20, 100);
     const offset = this.parseOffset(offsetRaw);
     const search =
-      q !== undefined && q.trim().length > 0 ? q.trim().slice(0, 120) : undefined;
+      q !== undefined && q.trim().length > 0
+        ? q.trim().slice(0, 120)
+        : undefined;
 
     const [rows, total] = await this.articleService.findManyPage({
       crawlStatus,

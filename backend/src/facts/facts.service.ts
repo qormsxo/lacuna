@@ -8,7 +8,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
-import { Repository } from 'typeorm';
+import { FindOptionsWhere, ILike, Repository } from 'typeorm';
+import { escapeLike } from '../common/utils/sql';
 import { FailureFileLogger } from '../common/logging/failure-file.logger';
 import { classifyLlmError } from '../common/logging/llm-error.util';
 import { LLM_PROVIDER } from '../llm/llm-provider';
@@ -16,7 +17,10 @@ import type { LlmProvider } from '../llm/llm-provider';
 import { NewsArticleEntity } from '../news/entities/news-article.entity';
 import { isClaimFactType } from './constants/fact-types';
 import { matchEvidenceSentence } from './evidence/evidence-matcher';
-import { ExtractedFactEntity } from './entities/extracted-fact.entity';
+import {
+  ExtractedFactEntity,
+  FactReviewStatus,
+} from './entities/extracted-fact.entity';
 import { FactExtractionRunEntity } from './entities/fact-extraction-run.entity';
 import {
   buildFactExtractionSystemPrompt,
@@ -51,8 +55,7 @@ export class FactsService {
     configService: ConfigService,
   ) {
     this.temperature = configService.get<number>('llm.temperature') ?? 0;
-    this.maxBodyChars =
-      configService.get<number>('llm.maxBodyChars') ?? 12000;
+    this.maxBodyChars = configService.get<number>('llm.maxBodyChars') ?? 12000;
     this.unmatchedEvidenceMode =
       configService.get<string>('llm.unmatchedEvidenceMode') === 'exclude'
         ? 'exclude'
@@ -239,7 +242,10 @@ export class FactsService {
     failed: number;
     results: FactExtractionServiceResult[];
   }> {
-    const candidates = await this.findArticlesPendingExtraction(limit, category);
+    const candidates = await this.findArticlesPendingExtraction(
+      limit,
+      category,
+    );
     const results: FactExtractionServiceResult[] = [];
     const articleIds: string[] = [];
     let extracted = 0;
@@ -386,7 +392,37 @@ export class FactsService {
     });
   }
 
-  async countFacts(): Promise<{ total: number; accepted: number; needsReview: number }> {
+  async listPaged(options: {
+    limit: number;
+    offset: number;
+    reviewStatus?: FactReviewStatus;
+    query?: string;
+  }): Promise<{ rows: ExtractedFactEntity[]; total: number }> {
+    const where: FindOptionsWhere<ExtractedFactEntity> = {};
+
+    if (options.reviewStatus !== undefined) {
+      where.reviewStatus = options.reviewStatus;
+    }
+
+    if (options.query !== undefined && options.query.length > 0) {
+      where.normalizedStatement = ILike(`%${escapeLike(options.query)}%`);
+    }
+
+    const [rows, total] = await this.facts.findAndCount({
+      where,
+      order: { extractedAt: 'DESC' },
+      take: options.limit,
+      skip: options.offset,
+    });
+
+    return { rows, total };
+  }
+
+  async countFacts(): Promise<{
+    total: number;
+    accepted: number;
+    needsReview: number;
+  }> {
     const total = await this.facts.count();
     const accepted = await this.facts.count({
       where: { reviewStatus: 'accepted' },
@@ -397,7 +433,6 @@ export class FactsService {
 
     return { total, accepted, needsReview };
   }
-
 
   private findCompletedRun(
     articleId: string,

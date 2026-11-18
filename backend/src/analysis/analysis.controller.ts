@@ -17,11 +17,21 @@ import {
   toFactRelationDto,
   toFactVerificationDto,
 } from './analysis.mapper';
+import type { BackgroundAccepted } from '../tasks/background';
+import {
+  isBackgroundRequested,
+  runMaybeInBackground,
+} from '../tasks/background';
+import { TaskRunnerService } from '../tasks/task-runner.service';
+import { parseOffset } from '../common/utils/pagination';
 import { AnalysisService } from './analysis.service';
+import type { FactSummary } from './analysis.service';
+import { isRelationType } from './constants/relation-types';
 import {
   AnalysisResultDto,
   FactRelationDto,
   FactVerificationDto,
+  RelationFactSummaryDto,
   RelationListDto,
   VerificationListDto,
 } from './dto/analysis.dto';
@@ -32,7 +42,10 @@ import { FactVerificationEntity } from './entities/fact-verification.entity';
 @ApiTags('analysis')
 @Controller({ path: 'analysis', version: '1' })
 export class AnalysisController {
-  constructor(private readonly analysisService: AnalysisService) {}
+  constructor(
+    private readonly analysisService: AnalysisService,
+    private readonly taskRunner: TaskRunnerService,
+  ) {}
 
   @Post('run')
   @ApiOperation({
@@ -50,20 +63,35 @@ export class AnalysisController {
     required: false,
     example: 'false',
   })
+  @ApiQuery({
+    name: 'background',
+    required: false,
+    example: 'true',
+    description: 'true면 즉시 taskId를 반환하고 /tasks/:id로 결과를 조회',
+  })
   @ApiOkResponse({ type: AnalysisResultDto })
   async run(
     @Query('factIds') factIdsRaw?: string,
     @Query('force') forceRaw?: string,
-  ): Promise<AnalysisResultDto> {
+    @Query('background') backgroundRaw?: string,
+  ): Promise<AnalysisResultDto | BackgroundAccepted> {
     const factIds = this.parseFactIds(factIdsRaw);
     const force = forceRaw === 'true' || forceRaw === '1';
-    const result = await this.analysisService.runAnalysis(factIds, force);
 
-    return this.toResultDto(
-      result.run,
-      result.verifications,
-      result.relations,
-      result.reusedExisting,
+    return runMaybeInBackground(
+      this.taskRunner,
+      isBackgroundRequested(backgroundRaw),
+      'analysis.run',
+      async (): Promise<AnalysisResultDto> => {
+        const result = await this.analysisService.runAnalysis(factIds, force);
+
+        return this.toResultDto(
+          result.run,
+          result.verifications,
+          result.relations,
+          result.reusedExisting,
+        );
+      },
     );
   }
 
@@ -107,9 +135,7 @@ export class AnalysisController {
   @Get('verifications/:id')
   @ApiOperation({ summary: 'Get one verification record' })
   @ApiOkResponse({ type: FactVerificationDto })
-  async getVerification(
-    @Param('id') id: string,
-  ): Promise<FactVerificationDto> {
+  async getVerification(@Param('id') id: string): Promise<FactVerificationDto> {
     const item = await this.analysisService.getVerification(id);
 
     return toFactVerificationDto(item);
@@ -122,24 +148,60 @@ export class AnalysisController {
   })
   @ApiQuery({ name: 'factId', required: false })
   @ApiQuery({ name: 'limit', required: false, example: '50' })
+  @ApiQuery({ name: 'offset', required: false, example: '0' })
+  @ApiQuery({ name: 'relationType', required: false })
   @ApiOkResponse({ type: RelationListDto })
   async listRelations(
     @Query('factId') factId?: string,
     @Query('limit') limitRaw?: string,
+    @Query('offset') offsetRaw?: string,
+    @Query('relationType') relationTypeRaw?: string,
   ): Promise<RelationListDto> {
-    const rows =
-      factId !== undefined && factId.trim().length > 0
-        ? await this.analysisService.listRelationsByFact(factId)
-        : await this.analysisService.listRecentRelations(
-            this.parseLimit(limitRaw, 50),
-          );
+    let rows: FactRelationEntity[];
+    let total: number;
+
+    if (factId !== undefined && factId.trim().length > 0) {
+      rows = await this.analysisService.listRelationsByFact(factId);
+      total = rows.length;
+    } else {
+      const relationType =
+        relationTypeRaw === undefined || relationTypeRaw.trim().length === 0
+          ? undefined
+          : relationTypeRaw.trim();
+
+      if (relationType !== undefined && !isRelationType(relationType)) {
+        throw new BadRequestException(
+          `Unsupported relationType: ${relationType}`,
+        );
+      }
+
+      const page = await this.analysisService.listRelationsPaged({
+        limit: this.parseLimit(limitRaw, 50),
+        offset: parseOffset(offsetRaw),
+        relationType,
+      });
+      rows = page.rows;
+      total = page.total;
+    }
+
+    const factIds: string[] = [];
+
+    for (const row of rows) {
+      factIds.push(row.factIdA, row.factIdB);
+    }
+
+    const summaries = await this.analysisService.loadFactSummaries(factIds);
     const relations: FactRelationDto[] = [];
 
     for (const row of rows) {
-      relations.push(toFactRelationDto(row));
+      relations.push({
+        ...toFactRelationDto(row),
+        factA: toSummaryDto(summaries.get(row.factIdA)),
+        factB: toSummaryDto(summaries.get(row.factIdB)),
+      });
     }
 
-    return { relations };
+    return { relations, total };
   }
 
   @Get('relations/:id')
@@ -217,4 +279,10 @@ export class AnalysisController {
       relations: relationDtos,
     };
   }
+}
+
+function toSummaryDto(
+  summary: FactSummary | undefined,
+): RelationFactSummaryDto | null {
+  return summary === undefined ? null : { ...summary };
 }

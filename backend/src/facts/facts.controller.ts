@@ -12,22 +12,34 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import {
-  isNewsCategory,
-  NEWS_CATEGORIES,
-} from '../news/constants/categories';
+import { isNewsCategory, NEWS_CATEGORIES } from '../news/constants/categories';
 import {
   ExtractedFactDto,
   FactExtractionResultDto,
   FactListResponseDto,
 } from './dto/fact.dto';
+import {
+  ExtractedFactEntity,
+  FactReviewStatus,
+} from './entities/extracted-fact.entity';
+import { FactExtractionRunEntity } from './entities/fact-extraction-run.entity';
 import { toExtractedFactDto, toFactExtractionRunDto } from './facts.mapper';
+import type { BackgroundAccepted } from '../tasks/background';
+import {
+  isBackgroundRequested,
+  runMaybeInBackground,
+} from '../tasks/background';
+import { TaskRunnerService } from '../tasks/task-runner.service';
+import { parseOffset } from '../common/utils/pagination';
 import { FactsService } from './facts.service';
 
 @ApiTags('facts')
 @Controller({ path: 'facts', version: '1' })
 export class FactsController {
-  constructor(private readonly factsService: FactsService) {}
+  constructor(
+    private readonly factsService: FactsService,
+    private readonly taskRunner: TaskRunnerService,
+  ) {}
 
   @Post('extract/pending')
   @ApiOperation({
@@ -41,16 +53,17 @@ export class FactsController {
     example: '경제',
     description: 'Only extract from articles in this category',
   })
+  @ApiQuery({
+    name: 'background',
+    required: false,
+    example: 'true',
+    description: 'true면 즉시 taskId를 반환하고 /tasks/:id로 결과를 조회',
+  })
   async extractPending(
     @Query('limit') limitRaw?: string,
     @Query('category') category?: string,
-  ): Promise<{
-    attempted: number;
-    articleIds: string[];
-    extracted: number;
-    failed: number;
-    results: FactExtractionResultDto[];
-  }> {
+    @Query('background') backgroundRaw?: string,
+  ): Promise<ExtractPendingResult | BackgroundAccepted> {
     const limit = this.parseLimit(limitRaw, 10);
     let scopedCategory: string | undefined;
 
@@ -64,30 +77,25 @@ export class FactsController {
       scopedCategory = trimmed;
     }
 
-    const batch = await this.factsService.extractPendingBatch(
-      limit,
-      scopedCategory,
+    return runMaybeInBackground(
+      this.taskRunner,
+      isBackgroundRequested(backgroundRaw),
+      'facts.extractPending',
+      async (): Promise<ExtractPendingResult> => {
+        const batch = await this.factsService.extractPendingBatch(
+          limit,
+          scopedCategory,
+        );
+
+        return {
+          attempted: batch.attempted,
+          articleIds: batch.articleIds,
+          extracted: batch.extracted,
+          failed: batch.failed,
+          results: toExtractionResults(batch.results),
+        };
+      },
     );
-    const results: FactExtractionResultDto[] = [];
-
-    for (const item of batch.results) {
-      const facts: ExtractedFactDto[] = [];
-      for (const fact of item.facts) {
-        facts.push(toExtractedFactDto(fact));
-      }
-      results.push({
-        run: toFactExtractionRunDto(item.run, item.reusedExisting),
-        facts,
-      });
-    }
-
-    return {
-      attempted: batch.attempted,
-      articleIds: batch.articleIds,
-      extracted: batch.extracted,
-      failed: batch.failed,
-      results,
-    };
   }
 
   @Post('extract/retry-failures')
@@ -96,31 +104,32 @@ export class FactsController {
       'Retry recent retryable Gemini/fact-extraction failures from logs and failed runs',
   })
   @ApiQuery({ name: 'limit', required: false, example: '5' })
-  async retryFailedExtractions(@Query('limit') limitRaw?: string): Promise<{
-    attempted: number;
-    articleIds: string[];
-    results: FactExtractionResultDto[];
-  }> {
+  @ApiQuery({
+    name: 'background',
+    required: false,
+    example: 'true',
+    description: 'true면 즉시 taskId를 반환하고 /tasks/:id로 결과를 조회',
+  })
+  async retryFailedExtractions(
+    @Query('limit') limitRaw?: string,
+    @Query('background') backgroundRaw?: string,
+  ): Promise<RetryExtractionResult | BackgroundAccepted> {
     const limit = this.parseLimit(limitRaw, 5);
-    const batch = await this.factsService.retryFailedExtractions(limit);
-    const results: FactExtractionResultDto[] = [];
 
-    for (const item of batch.results) {
-      const facts: ExtractedFactDto[] = [];
-      for (const fact of item.facts) {
-        facts.push(toExtractedFactDto(fact));
-      }
-      results.push({
-        run: toFactExtractionRunDto(item.run, item.reusedExisting),
-        facts,
-      });
-    }
+    return runMaybeInBackground(
+      this.taskRunner,
+      isBackgroundRequested(backgroundRaw),
+      'facts.retryFailures',
+      async (): Promise<RetryExtractionResult> => {
+        const batch = await this.factsService.retryFailedExtractions(limit);
 
-    return {
-      attempted: batch.attempted,
-      articleIds: batch.articleIds,
-      results,
-    };
+        return {
+          attempted: batch.attempted,
+          articleIds: batch.articleIds,
+          results: toExtractionResults(batch.results),
+        };
+      },
+    );
   }
 
   @Post('extract/:articleId')
@@ -131,7 +140,8 @@ export class FactsController {
     name: 'force',
     required: false,
     example: 'false',
-    description: 'Re-run even if a completed extraction exists for the same body',
+    description:
+      'Re-run even if a completed extraction exists for the same body',
   })
   @ApiOkResponse({ type: FactExtractionResultDto })
   async extract(
@@ -171,19 +181,40 @@ export class FactsController {
   @Get()
   @ApiOperation({ summary: 'List recent extracted facts' })
   @ApiQuery({ name: 'limit', required: false, example: '50' })
+  @ApiQuery({ name: 'offset', required: false, example: '0' })
+  @ApiQuery({
+    name: 'reviewStatus',
+    required: false,
+    enum: ['accepted', 'needs_review'],
+  })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: '정규화 문장 부분 검색',
+  })
   @ApiOkResponse({ type: FactListResponseDto })
   async listRecent(
     @Query('limit') limitRaw?: string,
+    @Query('offset') offsetRaw?: string,
+    @Query('reviewStatus') reviewStatusRaw?: string,
+    @Query('q') query?: string,
   ): Promise<FactListResponseDto> {
     const limit = this.parseLimit(limitRaw, 50);
-    const rows = await this.factsService.listRecent(limit);
+    const offset = parseOffset(offsetRaw);
+    const reviewStatus = parseReviewStatus(reviewStatusRaw);
+    const { rows, total } = await this.factsService.listPaged({
+      limit,
+      offset,
+      reviewStatus,
+      query: query?.trim(),
+    });
     const facts: ExtractedFactDto[] = [];
 
     for (const row of rows) {
       facts.push(toExtractedFactDto(row));
     }
 
-    return { facts };
+    return { facts, total };
   }
 
   @Get(':id')
@@ -210,4 +241,57 @@ export class FactsController {
 
     return value;
   }
+}
+
+type ExtractPendingResult = {
+  attempted: number;
+  articleIds: string[];
+  extracted: number;
+  failed: number;
+  results: FactExtractionResultDto[];
+};
+
+type RetryExtractionResult = {
+  attempted: number;
+  articleIds: string[];
+  results: FactExtractionResultDto[];
+};
+
+function parseReviewStatus(
+  raw: string | undefined,
+): FactReviewStatus | undefined {
+  if (raw === undefined || raw.trim().length === 0) {
+    return undefined;
+  }
+
+  if (raw === 'accepted' || raw === 'needs_review') {
+    return raw;
+  }
+
+  throw new BadRequestException(
+    'reviewStatus must be accepted or needs_review',
+  );
+}
+
+function toExtractionResults(
+  items: Array<{
+    run: FactExtractionRunEntity;
+    facts: ExtractedFactEntity[];
+    reusedExisting: boolean;
+  }>,
+): FactExtractionResultDto[] {
+  const results: FactExtractionResultDto[] = [];
+
+  for (const item of items) {
+    const facts: ExtractedFactDto[] = [];
+    for (const fact of item.facts) {
+      facts.push(toExtractedFactDto(fact));
+    }
+    results.push({
+      run: toFactExtractionRunDto(item.run, item.reusedExisting),
+      facts,
+    });
+  }
+
+  return results;
 }

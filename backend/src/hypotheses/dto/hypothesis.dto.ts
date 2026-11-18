@@ -223,6 +223,9 @@ export class HypothesisGenerationRunDto {
 export class HypothesisListResponseDto {
   @ApiProperty({ type: [HypothesisDto] })
   hypotheses!: HypothesisDto[];
+
+  @ApiPropertyOptional({ description: 'total rows matching the filter' })
+  total?: number;
 }
 
 export class HypothesisGenerationResultDto {
