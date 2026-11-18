@@ -1,8 +1,26 @@
+import { ActivityFileLogger } from '../common/logging/activity-file.logger';
+import { FailureFileLogger } from '../common/logging/failure-file.logger';
 import { ArticleCollectionStore } from './articles/article-collection.store';
 import { NewsCollector } from './collectors/news-collector';
 import { ArticleDto } from './dto/article.dto';
 import { CollectorResult } from './dto/collect-result.dto';
 import { NewsService } from './news.service';
+
+const fakeActivityLogger = {
+  info: () => Promise.resolve(),
+  warn: () => Promise.resolve(),
+  error: () => Promise.resolve(),
+} as unknown as ActivityFileLogger;
+
+const fakeFailureLogger = {
+  append: () => Promise.resolve(),
+  readRecent: () => Promise.resolve([]),
+} as unknown as FailureFileLogger;
+
+const fakeTitleFilter = {
+  filterByTitle: (_category: string, articles: ArticleDto[]) =>
+    Promise.resolve({ kept: articles, dropped: 0 }),
+} as never;
 
 class StubCollector implements NewsCollector {
   constructor(
@@ -81,6 +99,9 @@ describe('NewsService', () => {
         }),
       ],
       articleStore,
+      fakeActivityLogger,
+      fakeFailureLogger,
+      fakeTitleFilter,
     );
 
     const result = await service.collect('정치', ['google', 'naver', 'daum']);
@@ -88,6 +109,7 @@ describe('NewsService', () => {
     expect(result.summary.successCount).toBe(2);
     expect(result.summary.failureCount).toBe(1);
     expect(result.summary.createdCount).toBe(2);
+    expect(result.summary.filteredOutCount).toBe(0);
     expect(result.failures[0]?.source).toBe('google');
     expect(result.articles).toHaveLength(2);
     expect(articleStore.saved).toHaveLength(2);

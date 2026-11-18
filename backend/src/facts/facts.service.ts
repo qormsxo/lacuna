@@ -9,9 +9,10 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
 import { Repository } from 'typeorm';
+import { FailureFileLogger } from '../common/logging/failure-file.logger';
+import { classifyLlmError } from '../common/logging/llm-error.util';
 import { LLM_PROVIDER } from '../llm/llm-provider';
 import type { LlmProvider } from '../llm/llm-provider';
-
 import { NewsArticleEntity } from '../news/entities/news-article.entity';
 import { isClaimFactType } from './constants/fact-types';
 import { matchEvidenceSentence } from './evidence/evidence-matcher';
@@ -46,6 +47,7 @@ export class FactsService {
     private readonly runs: Repository<FactExtractionRunEntity>,
     @Inject(LLM_PROVIDER)
     private readonly llmProvider: LlmProvider,
+    private readonly failureFileLogger: FailureFileLogger,
     configService: ConfigService,
   ) {
     this.temperature = configService.get<number>('llm.temperature') ?? 0;
@@ -138,6 +140,10 @@ export class FactsService {
         ],
         temperature: this.temperature,
         jsonMode: true,
+        context: {
+          stage: 'fact_extraction',
+          articleId,
+        },
       });
 
       const parsed = parseLlmFactResponseJson(completion.content);
@@ -174,15 +180,180 @@ export class FactsService {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Fact extraction failed';
+      const classified = classifyLlmError(message);
 
       run.status = 'failed';
       run.errorMessage = message;
       run.finishedAt = new Date();
       await this.runs.save(run);
 
+      if (classified.errorCode === 'SCHEMA') {
+        await this.failureFileLogger.append({
+          kind: 'llm',
+          retryable: false,
+          errorCode: classified.errorCode,
+          message,
+          stage: 'fact_extraction',
+          articleId,
+        });
+      }
+
       this.logger.error(`Fact extraction failed for ${articleId}: ${message}`);
       throw new BadRequestException(message);
     }
+  }
+
+  async findArticlesPendingExtraction(
+    limit: number,
+    category?: string,
+  ): Promise<NewsArticleEntity[]> {
+    const query = this.articles
+      .createQueryBuilder('article')
+      .where('article.crawlStatus = :status', { status: 'success' })
+      .andWhere('article.body IS NOT NULL')
+      .andWhere('article.bodyHash IS NOT NULL')
+      .andWhere(
+        `NOT EXISTS (
+          SELECT 1
+          FROM fact_extraction_runs run
+          WHERE run."articleId" = article.id
+            AND run."bodyHash" = article."bodyHash"
+            AND run.status = 'completed'
+        )`,
+      );
+
+    if (category !== undefined) {
+      query.andWhere('article.category = :category', { category });
+    }
+
+    return query.orderBy('article.crawledAt', 'DESC').take(limit).getMany();
+  }
+
+  async extractPendingBatch(
+    limit: number,
+    category?: string,
+  ): Promise<{
+    attempted: number;
+    articleIds: string[];
+    extracted: number;
+    failed: number;
+    results: FactExtractionServiceResult[];
+  }> {
+    const candidates = await this.findArticlesPendingExtraction(limit, category);
+    const results: FactExtractionServiceResult[] = [];
+    const articleIds: string[] = [];
+    let extracted = 0;
+    let failed = 0;
+
+    this.logger.log(
+      `Fact extract pending batch start limit=${limit} category=${category ?? 'all'} candidates=${candidates.length}`,
+    );
+
+    for (const article of candidates) {
+      articleIds.push(article.id);
+
+      try {
+        const result = await this.extractForArticle(article.id, false);
+        extracted += 1;
+        results.push(result);
+      } catch (error) {
+        failed += 1;
+        this.logger.warn(
+          `Pending extraction failed for ${article.id}: ${
+            error instanceof Error ? error.message : 'unknown'
+          }`,
+        );
+      }
+    }
+
+    this.logger.log(
+      `Fact extract pending batch done attempted=${articleIds.length} extracted=${extracted} failed=${failed}`,
+    );
+
+    return {
+      attempted: articleIds.length,
+      articleIds,
+      extracted,
+      failed,
+      results,
+    };
+  }
+
+  async retryFailedExtractions(limit = 10): Promise<{
+    attempted: number;
+    articleIds: string[];
+    results: FactExtractionServiceResult[];
+  }> {
+    const fromLog = await this.failureFileLogger.readRecent('llm', limit * 4);
+    const articleIds: string[] = [];
+    const seen = new Set<string>();
+
+    for (const entry of fromLog) {
+      if (
+        !entry.retryable ||
+        entry.stage !== 'fact_extraction' ||
+        entry.articleId === undefined
+      ) {
+        continue;
+      }
+
+      if (seen.has(entry.articleId)) {
+        continue;
+      }
+
+      seen.add(entry.articleId);
+      articleIds.push(entry.articleId);
+
+      if (articleIds.length >= limit) {
+        break;
+      }
+    }
+
+    if (articleIds.length < limit) {
+      const failedRuns = await this.runs.find({
+        where: { status: 'failed' },
+        order: { finishedAt: 'DESC' },
+        take: limit * 2,
+      });
+
+      for (const run of failedRuns) {
+        if (articleIds.length >= limit) {
+          break;
+        }
+
+        if (seen.has(run.articleId)) {
+          continue;
+        }
+
+        const classified = classifyLlmError(run.errorMessage ?? '');
+        if (!classified.retryable) {
+          continue;
+        }
+
+        seen.add(run.articleId);
+        articleIds.push(run.articleId);
+      }
+    }
+
+    const results: FactExtractionServiceResult[] = [];
+
+    for (const articleId of articleIds) {
+      try {
+        results.push(await this.extractForArticle(articleId, true));
+      } catch (error) {
+        this.logger.warn(
+          `Retry extraction skipped/failed for ${articleId}: ${
+            error instanceof Error ? error.message : 'unknown'
+          }`,
+        );
+      }
+    }
+
+    return {
+      attempted: articleIds.length,
+      articleIds,
+      results,
+    };
   }
 
   async listByArticle(articleId: string): Promise<ExtractedFactEntity[]> {

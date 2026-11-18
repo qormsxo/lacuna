@@ -100,4 +100,13 @@ export class CrawlRunResponseDto {
 export class ArticleListResponseDto {
   @ApiProperty({ type: [ArticleResponseDto] })
   articles!: ArticleResponseDto[];
+
+  @ApiProperty()
+  total!: number;
+
+  @ApiProperty()
+  limit!: number;
+
+  @ApiProperty()
+  offset!: number;
 }

@@ -138,19 +138,27 @@ function parseFactItem(
     };
   }
 
-  if (typeof eventTypeRaw !== 'string' || !isEventType(eventTypeRaw)) {
+  if (typeof eventTypeRaw !== 'string' || eventTypeRaw.trim().length === 0) {
     return {
       ok: false,
-      message: `facts[${index}].eventType is invalid`,
+      message: `facts[${index}].eventType is required`,
     };
   }
 
-  if (typeof factTypeRaw !== 'string' || !isFactType(factTypeRaw)) {
+  if (typeof factTypeRaw !== 'string' || factTypeRaw.trim().length === 0) {
     return {
       ok: false,
-      message: `facts[${index}].factType is invalid`,
+      message: `facts[${index}].factType is required`,
     };
   }
+
+  // LLMs often invent close-but-invalid enum labels; coerce instead of failing the whole article.
+  const eventType = isEventType(eventTypeRaw)
+    ? eventTypeRaw
+    : 'other_verifiable_claim';
+  const factType = isFactType(factTypeRaw)
+    ? factTypeRaw
+    : 'reported_content';
 
   if (entities === null) {
     return {
@@ -172,11 +180,11 @@ function parseFactItem(
       normalizedStatement: normalizedStatement.trim(),
       originalExpression: originalExpression.trim(),
       entities,
-      eventType: eventTypeRaw,
+      eventType,
       occurredAt,
       quantity,
       evidenceSentence: evidenceSentence.trim(),
-      factType: factTypeRaw,
+      factType,
     },
   };
 }

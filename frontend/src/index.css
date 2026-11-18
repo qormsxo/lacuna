@@ -87,6 +87,10 @@ a:hover {
   padding: 2.5rem 0 4rem;
 }
 
+.app-main:has(.page-wide) {
+  width: min(1480px, calc(100% - 2rem));
+}
+
 .page h1,
 .dashboard h1 {
   margin: 0 0 0.5rem;
@@ -101,10 +105,133 @@ a:hover {
   color: var(--muted);
 }
 
+.lede-wide {
+  max-width: 56rem;
+}
+
+.hypothesis-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.hypothesis-detail-grid .panel-span-2 {
+  grid-column: 1 / -1;
+}
+
+.detail-prose {
+  margin: 0;
+  line-height: 1.7;
+  max-width: none;
+  white-space: pre-wrap;
+}
+
 .panel {
   padding: 1.5rem;
   background: var(--panel);
   border: 1px solid var(--line);
+}
+
+.collect-panel {
+  margin-bottom: 1.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.choice-group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.choice-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.limit-input {
+  width: 6.5rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.search-input {
+  min-width: min(22rem, 100%);
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.pager-controls {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.page-btn {
+  min-width: 2.25rem;
+}
+
+.page-btn-active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.choice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--line);
+  background: #f7f1e6;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.action-row button {
+  border: 1px solid var(--line);
+  background: var(--ink);
+  color: #fffdf8;
+  padding: 0.65rem 1rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.action-row button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.pager .action-row button {
+  background: var(--panel);
+  color: var(--ink);
 }
 
 .panel h2,
@@ -218,10 +345,26 @@ a:hover {
 
 .data-table th,
 .data-table td {
-  padding: 0.85rem 1rem;
+  padding: 0.7rem 0.75rem;
   border-bottom: 1px solid var(--line);
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+.data-table .title-cell {
+  max-width: 14rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.data-table .nowrap-cell {
+  white-space: nowrap;
+}
+
+.data-table .datetime-cell {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
 }
 
 .data-table th {
@@ -229,6 +372,16 @@ a:hover {
   font-size: 0.8rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.data-table .select-cell {
+  width: 2.5rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.data-table tr.row-selected {
+  background: rgba(36, 91, 107, 0.08);
 }
 
 .status-row {
@@ -284,6 +437,10 @@ a:hover {
   }
 
   .split-view {
+    grid-template-columns: 1fr;
+  }
+
+  .hypothesis-detail-grid {
     grid-template-columns: 1fr;
   }
 }

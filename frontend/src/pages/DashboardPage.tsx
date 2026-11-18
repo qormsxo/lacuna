@@ -43,6 +43,22 @@ export function DashboardPage() {
         뉴스 수집부터 사실 연결 가설까지 전체 파이프라인 현황입니다.
       </p>
 
+      <div className="panel collect-panel">
+        <h2>실행 순서</h2>
+        <p className="meta">
+          1. <Link to="/news">뉴스</Link> 수집 → 본문 크롤(성공)
+        </p>
+        <p className="meta">
+          2. <Link to="/facts">사실</Link> 「성공 기사에서 사실 추출」
+        </p>
+        <p className="meta">
+          3. <Link to="/relations">관계</Link> 「관계·검증 분석 실행」
+        </p>
+        <p className="meta">
+          4. <Link to="/hypotheses">가설</Link> 「가설 생성」
+        </p>
+      </div>
+
       {state.kind === 'loading' ? (
         <StatusBadge label="불러오는 중..." tone="pending" />
       ) : null}
@@ -102,7 +118,10 @@ export function DashboardPage() {
                       <Link to="/news">{article.title}</Link>
                       <p className="meta">
                         {article.publisher ?? '언론사 미상'} · {article.category}{' '}
-                        · {article.crawlStatus}
+                        ·{' '}
+                        {article.crawlStatus === 'pending'
+                          ? '대기(본문 미크롤)'
+                          : article.crawlStatus}
                       </p>
                     </div>
                   </li>

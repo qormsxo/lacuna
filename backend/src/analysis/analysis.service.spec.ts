@@ -76,6 +76,7 @@ describe('AnalysisService', () => {
     } as unknown as Repository<NewsArticleEntity>;
 
     const runsRepo = {
+      find: () => Promise.resolve([]),
       findOne: () => Promise.resolve(null),
       create: (input: Partial<AnalysisRunEntity>) => {
         const entity = new AnalysisRunEntity();

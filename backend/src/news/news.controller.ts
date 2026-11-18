@@ -1,6 +1,8 @@
 import {
   BadRequestException,
+  Body,
   Controller,
+  Delete,
   Get,
   NotFoundException,
   Param,
@@ -31,6 +33,10 @@ import {
   CategoryListResponseDto,
   CollectResponseDto,
 } from './dto/collect-result.dto';
+import {
+  DeleteArticlesRequestDto,
+  DeleteArticlesResponseDto,
+} from './dto/delete-articles.dto';
 import {
   CollectionJobStatusDto,
   CrawlHistoryListDto,
@@ -87,17 +93,74 @@ export class NewsController {
     return this.newsService.collect(category, selectedSources);
   }
 
+  @Post('collect/retry-failures')
+  @ApiOperation({
+    summary:
+      'Retry recent retryable collect failures recorded in logs/collect-failures.jsonl',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: '10' })
+  async retryCollectFailures(
+    @Query('limit') limitRaw?: string,
+  ): Promise<{ attempted: number; results: CollectResponseDto[] }> {
+    const limit = this.parseLimit(limitRaw, 10);
+    return this.newsService.retryCollectFailures(limit);
+  }
+
   @Post('crawl/run')
   @ApiOperation({
     summary: 'Crawl pending collected article bodies in a limited batch',
   })
-  @ApiQuery({ name: 'limit', required: false, example: '5' })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: '20',
+    description:
+      'Max articles to crawl this run. If higher than remaining candidates, crawls all of them.',
+  })
+  @ApiQuery({
+    name: 'source',
+    required: false,
+    example: 'naver',
+    description: 'Only crawl articles collected from this source',
+  })
+  @ApiQuery({
+    name: 'category',
+    required: false,
+    example: '경제',
+    description: 'Only crawl articles in this category',
+  })
+  @ApiQuery({
+    name: 'force',
+    required: false,
+    example: 'true',
+    description:
+      'Ignore nextRetryAt and include retry_waiting/inaccessible Google wrappers immediately',
+  })
   @ApiOkResponse({ type: CrawlRunResponseDto })
   async runCrawl(
     @Query('limit') limitRaw?: string,
+    @Query('source') source?: string,
+    @Query('category') category?: string,
+    @Query('force') forceRaw?: string,
   ): Promise<CrawlRunResponseDto> {
-    const limit = this.parseLimit(limitRaw, 5);
-    const result = await this.crawlService.runBatch(limit);
+    if (source !== undefined && !isNewsSource(source)) {
+      throw new BadRequestException(
+        `Unsupported source: ${source}. Allowed: ${NEWS_SOURCES.join(', ')}`,
+      );
+    }
+
+    if (category !== undefined && !isNewsCategory(category)) {
+      throw new BadRequestException(
+        `Unsupported category: ${category}. Allowed: ${NEWS_CATEGORIES.join(', ')}`,
+      );
+    }
+
+    const limit = this.parseLimit(limitRaw, 20, 5000);
+    const force = forceRaw === 'true' || forceRaw === '1';
+    const result = await this.crawlService.runBatch(limit, source, {
+      force,
+      category,
+    });
     const articles: ArticleResponseDto[] = [];
 
     for (const article of result.articles) {
@@ -173,6 +236,13 @@ export class NewsController {
   })
   @ApiQuery({ name: 'crawlStatus', required: false, example: 'pending' })
   @ApiQuery({ name: 'category', required: false, example: '정치' })
+  @ApiQuery({ name: 'source', required: false, example: 'naver' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    example: '금리',
+    description: 'Search title/publisher (case-insensitive)',
+  })
   @ApiQuery({
     name: 'from',
     required: false,
@@ -189,6 +259,8 @@ export class NewsController {
   async listArticles(
     @Query('crawlStatus') crawlStatus?: string,
     @Query('category') category?: string,
+    @Query('source') source?: string,
+    @Query('q') q?: string,
     @Query('from') fromRaw?: string,
     @Query('to') toRaw?: string,
     @Query('limit') limitRaw?: string,
@@ -204,14 +276,24 @@ export class NewsController {
       );
     }
 
+    if (source !== undefined && !isNewsSource(source)) {
+      throw new BadRequestException(
+        `Unsupported source: ${source}. Allowed: ${NEWS_SOURCES.join(', ')}`,
+      );
+    }
+
     const from = this.parseOptionalDate(fromRaw, 'from');
     const to = this.parseOptionalDate(toRaw, 'to');
-    const limit = this.parseLimit(limitRaw, 20);
+    const limit = this.parseLimit(limitRaw, 20, 100);
     const offset = this.parseOffset(offsetRaw);
+    const search =
+      q !== undefined && q.trim().length > 0 ? q.trim().slice(0, 120) : undefined;
 
-    const rows = await this.articleService.findMany({
+    const [rows, total] = await this.articleService.findManyPage({
       crawlStatus,
       category,
+      source,
+      q: search,
       from,
       to,
       limit,
@@ -224,7 +306,19 @@ export class NewsController {
       articles.push(toArticleResponse(row));
     }
 
-    return { articles };
+    return { articles, total, limit, offset };
+  }
+
+  @Delete('articles')
+  @ApiOperation({
+    summary:
+      'Delete selected collected articles and cascade related facts/hypotheses',
+  })
+  @ApiOkResponse({ type: DeleteArticlesResponseDto })
+  async deleteArticles(
+    @Body() body: DeleteArticlesRequestDto,
+  ): Promise<DeleteArticlesResponseDto> {
+    return this.articleService.deleteArticles(body.ids);
   }
 
   @Get('articles/:id')
@@ -273,16 +367,20 @@ export class NewsController {
     return selected;
   }
 
-  private parseLimit(raw: string | undefined, fallback: number): number {
+  private parseLimit(
+    raw: string | undefined,
+    fallback: number,
+    max = 50,
+  ): number {
     if (raw === undefined || raw.trim().length === 0) {
       return fallback;
     }
 
     const value = Number(raw);
 
-    if (!Number.isInteger(value) || value <= 0 || value > 50) {
+    if (!Number.isInteger(value) || value <= 0 || value > max) {
       throw new BadRequestException(
-        'limit must be an integer between 1 and 50',
+        `limit must be an integer between 1 and ${max}`,
       );
     }
 

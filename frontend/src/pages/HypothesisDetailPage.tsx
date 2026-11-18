@@ -45,7 +45,7 @@ export function HypothesisDetailPage() {
   }, [id]);
 
   return (
-    <section className="page">
+    <section className="page page-wide">
       <p className="meta">
         <Link to="/hypotheses">← 가설 목록</Link>
       </p>
@@ -60,13 +60,15 @@ export function HypothesisDetailPage() {
       {state.kind === 'ready' ? (
         <>
           <h1>{state.detail.hypothesis.title}</h1>
-          <p className="lede">{state.detail.hypothesis.coreClaim}</p>
+          <p className="lede lede-wide">{state.detail.hypothesis.coreClaim}</p>
           <p className="meta">상태: {state.detail.hypothesis.status}</p>
 
-          <div className="panel-grid">
-            <div className="panel">
+          <div className="hypothesis-detail-grid">
+            <div className="panel panel-span-2">
               <h2>도출 과정</h2>
-              <p>{state.detail.hypothesis.derivationProcess}</p>
+              <p className="detail-prose">
+                {state.detail.hypothesis.derivationProcess}
+              </p>
               <p className="meta">
                 사실/추론 구분: {state.detail.hypothesis.factsVersusInference}
               </p>

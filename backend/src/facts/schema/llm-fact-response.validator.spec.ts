@@ -38,7 +38,7 @@ describe('parseLlmFactResponseJson', () => {
     }
   });
 
-  it('rejects invalid eventType', () => {
+  it('coerces invalid eventType to other_verifiable_claim', () => {
     const result = parseLlmFactResponseJson(
       JSON.stringify({
         facts: [
@@ -56,6 +56,11 @@ describe('parseLlmFactResponseJson', () => {
       }),
     );
 
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+
+    if (result.ok) {
+      expect(result.data.facts[0]?.eventType).toBe('other_verifiable_claim');
+    }
   });
 });
+

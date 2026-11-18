@@ -144,6 +144,10 @@ export class HypothesisReevaluationService {
       ],
       temperature: this.temperature,
       jsonMode: true,
+      context: {
+        stage: 'hypothesis_reevaluation',
+        articleId,
+      },
     });
 
     const parsed = parseLlmReevaluationResponseJson(completion.content);

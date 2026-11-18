@@ -13,6 +13,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import {
+  isNewsCategory,
+  NEWS_CATEGORIES,
+} from '../news/constants/categories';
+import {
   ExtractedFactDto,
   FactExtractionResultDto,
   FactListResponseDto,
@@ -24,6 +28,100 @@ import { FactsService } from './facts.service';
 @Controller({ path: 'facts', version: '1' })
 export class FactsController {
   constructor(private readonly factsService: FactsService) {}
+
+  @Post('extract/pending')
+  @ApiOperation({
+    summary:
+      'Extract facts from crawled articles that do not yet have a completed extraction for the current body',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: '10' })
+  @ApiQuery({
+    name: 'category',
+    required: false,
+    example: '경제',
+    description: 'Only extract from articles in this category',
+  })
+  async extractPending(
+    @Query('limit') limitRaw?: string,
+    @Query('category') category?: string,
+  ): Promise<{
+    attempted: number;
+    articleIds: string[];
+    extracted: number;
+    failed: number;
+    results: FactExtractionResultDto[];
+  }> {
+    const limit = this.parseLimit(limitRaw, 10);
+    let scopedCategory: string | undefined;
+
+    if (category !== undefined && category.trim().length > 0) {
+      const trimmed = category.trim();
+      if (!isNewsCategory(trimmed)) {
+        throw new BadRequestException(
+          `Unsupported category: ${trimmed}. Allowed: ${NEWS_CATEGORIES.join(', ')}`,
+        );
+      }
+      scopedCategory = trimmed;
+    }
+
+    const batch = await this.factsService.extractPendingBatch(
+      limit,
+      scopedCategory,
+    );
+    const results: FactExtractionResultDto[] = [];
+
+    for (const item of batch.results) {
+      const facts: ExtractedFactDto[] = [];
+      for (const fact of item.facts) {
+        facts.push(toExtractedFactDto(fact));
+      }
+      results.push({
+        run: toFactExtractionRunDto(item.run, item.reusedExisting),
+        facts,
+      });
+    }
+
+    return {
+      attempted: batch.attempted,
+      articleIds: batch.articleIds,
+      extracted: batch.extracted,
+      failed: batch.failed,
+      results,
+    };
+  }
+
+  @Post('extract/retry-failures')
+  @ApiOperation({
+    summary:
+      'Retry recent retryable Gemini/fact-extraction failures from logs and failed runs',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: '5' })
+  async retryFailedExtractions(@Query('limit') limitRaw?: string): Promise<{
+    attempted: number;
+    articleIds: string[];
+    results: FactExtractionResultDto[];
+  }> {
+    const limit = this.parseLimit(limitRaw, 5);
+    const batch = await this.factsService.retryFailedExtractions(limit);
+    const results: FactExtractionResultDto[] = [];
+
+    for (const item of batch.results) {
+      const facts: ExtractedFactDto[] = [];
+      for (const fact of item.facts) {
+        facts.push(toExtractedFactDto(fact));
+      }
+      results.push({
+        run: toFactExtractionRunDto(item.run, item.reusedExisting),
+        facts,
+      });
+    }
+
+    return {
+      attempted: batch.attempted,
+      articleIds: batch.articleIds,
+      results,
+    };
+  }
 
   @Post('extract/:articleId')
   @ApiOperation({

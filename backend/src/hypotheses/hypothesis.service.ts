@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { FactRelationEntity } from '../analysis/entities/fact-relation.entity';
 import { ExtractedFactEntity } from '../facts/entities/extracted-fact.entity';
 import { LLM_PROVIDER } from '../llm/llm-provider';
@@ -179,6 +179,7 @@ export class HypothesisService {
         ],
         temperature: this.temperature,
         jsonMode: true,
+        context: { stage: 'hypothesis' },
       });
 
       const parsed = parseLlmHypothesisResponseJson(completion.content);
@@ -341,11 +342,13 @@ export class HypothesisService {
         );
       }
     } else {
-      facts = await this.facts.find({
-        where: { reviewStatus: 'accepted' },
-        order: { extractedAt: 'DESC' },
-        take: this.maxFacts,
-      });
+      facts = await this.loadUnusedAcceptedFacts(this.maxFacts);
+
+      if (facts.length < 2) {
+        throw new BadRequestException(
+          'Need at least two unused accepted facts from different articles. Run analysis on new facts first.',
+        );
+      }
     }
 
     if (facts.length > this.maxFacts) {
@@ -355,6 +358,45 @@ export class HypothesisService {
     }
 
     return facts;
+  }
+
+  private async loadUnusedAcceptedFacts(
+    limit: number,
+  ): Promise<ExtractedFactEntity[]> {
+    const usedFactIds = await this.collectHypothesizedFactIds();
+
+    if (usedFactIds.size === 0) {
+      return this.facts.find({
+        where: { reviewStatus: 'accepted' },
+        order: { extractedAt: 'DESC' },
+        take: limit,
+      });
+    }
+
+    return this.facts.find({
+      where: {
+        reviewStatus: 'accepted',
+        id: Not(In([...usedFactIds])),
+      },
+      order: { extractedAt: 'DESC' },
+      take: limit,
+    });
+  }
+
+  private async collectHypothesizedFactIds(): Promise<Set<string>> {
+    const runs = await this.runs.find({
+      where: { status: 'completed' },
+      select: ['factIds'],
+    });
+    const used = new Set<string>();
+
+    for (const run of runs) {
+      for (const factId of run.factIds) {
+        used.add(factId);
+      }
+    }
+
+    return used;
   }
 
   private async loadArticlesForFacts(

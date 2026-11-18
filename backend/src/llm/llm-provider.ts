@@ -5,10 +5,17 @@ export type LlmChatMessage = {
   content: string;
 };
 
+export type LlmCompletionContext = {
+  stage: string;
+  articleId?: string;
+  hypothesisId?: string;
+};
+
 export type LlmCompletionRequest = {
   messages: LlmChatMessage[];
   temperature: number;
   jsonMode: boolean;
+  context?: LlmCompletionContext;
 };
 
 export type LlmCompletionResult = {

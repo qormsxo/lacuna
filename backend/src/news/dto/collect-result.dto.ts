@@ -62,6 +62,9 @@ export class CollectSummaryDto {
   articleCount!: number;
 
   @ApiProperty()
+  filteredOutCount!: number;
+
+  @ApiProperty()
   createdCount!: number;
 
   @ApiProperty()

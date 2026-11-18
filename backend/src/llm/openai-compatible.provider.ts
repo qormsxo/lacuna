@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
+import { FailureFileLogger } from '../common/logging/failure-file.logger';
+import { classifyLlmError } from '../common/logging/llm-error.util';
 import {
   LlmCompletionRequest,
   LlmCompletionResult,
@@ -27,7 +29,10 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
   private readonly model: string;
   private readonly timeoutMs: number;
 
-  constructor(configService: ConfigService) {
+  constructor(
+    configService: ConfigService,
+    private readonly failureFileLogger: FailureFileLogger,
+  ) {
     this.apiKey = configService.get<string>('llm.apiKey') ?? '';
     this.baseUrl =
       configService.get<string>('llm.baseUrl') ??
@@ -71,7 +76,9 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
       const content = response.data.choices?.[0]?.message?.content;
 
       if (content === undefined || content === null || content.trim().length === 0) {
-        throw new Error('LLM returned empty content');
+        const emptyError = new Error('LLM returned empty content');
+        await this.logFailure(emptyError.message, request, undefined);
+        throw emptyError;
       }
 
       return {
@@ -87,10 +94,33 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
           'LLM request failed';
 
         this.logger.error(`LLM request failed: ${detail}`);
+        await this.logFailure(detail, request, error.response?.status);
         throw new Error(detail);
       }
 
       throw error;
     }
+  }
+
+  private async logFailure(
+    message: string,
+    request: LlmCompletionRequest,
+    statusCode: number | undefined,
+  ): Promise<void> {
+    const classified = classifyLlmError(message, statusCode);
+
+    await this.failureFileLogger.append({
+      kind: 'llm',
+      retryable: classified.retryable,
+      errorCode: classified.errorCode,
+      message,
+      statusCode,
+      stage: request.context?.stage ?? 'unknown',
+      articleId: request.context?.articleId,
+      details: {
+        hypothesisId: request.context?.hypothesisId,
+        model: this.model,
+      },
+    });
   }
 }

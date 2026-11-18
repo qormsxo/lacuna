@@ -26,6 +26,8 @@ import { CollectionJobService } from './jobs/collection-job.service';
 import { NewsController } from './news.controller';
 import { NewsService } from './news.service';
 import { CollectionSchedulerService } from './schedule/collection-scheduler.service';
+import { CategoryTitleFilterService } from './filters/category-title-filter.service';
+import { GoogleNewsUrlResolver } from './utils/google-news-url-resolver';
 
 @Module({
   imports: [
@@ -41,6 +43,8 @@ import { CollectionSchedulerService } from './schedule/collection-scheduler.serv
   providers: [
     HtmlFetcher,
     RssFeedLoader,
+    GoogleNewsUrlResolver,
+    CategoryTitleFilterService,
     GoogleNewsCollector,
     NaverNewsCollector,
     DaumNewsCollector,

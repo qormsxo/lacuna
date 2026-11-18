@@ -94,10 +94,12 @@ export class HtmlFetcher {
           ? iconv.decode(buffer, 'euc-kr')
           : buffer.toString('utf8');
 
+      const redirectedUrl = this.readAxiosFinalUrl(response, url);
+
       return {
         status: 'success',
         url,
-        finalUrl: this.readFinalUrl(url, body),
+        finalUrl: this.readFinalUrl(redirectedUrl, body),
         statusCode: response.status,
         body,
       };
@@ -115,6 +117,23 @@ export class HtmlFetcher {
     }
   }
 
+  private readAxiosFinalUrl(
+    response: { request?: { res?: { responseUrl?: string } }; config?: { url?: string } },
+    fallbackUrl: string,
+  ): string {
+    const fromRedirect = response.request?.res?.responseUrl;
+
+    if (typeof fromRedirect === 'string' && fromRedirect.length > 0) {
+      return fromRedirect;
+    }
+
+    if (typeof response.config?.url === 'string' && response.config.url.length > 0) {
+      return response.config.url;
+    }
+
+    return fallbackUrl;
+  }
+
   private readFinalUrl(fallbackUrl: string, html: string): string {
     const $ = cheerio.load(html);
 
@@ -122,7 +141,7 @@ export class HtmlFetcher {
       $('link[rel="canonical"]').attr('href') ?? '',
     );
 
-    if (!isBlank(canonical)) {
+    if (!isBlank(canonical) && !canonical.includes('news.google.com')) {
       try {
         return new URL(canonical, fallbackUrl).toString();
       } catch {
@@ -134,7 +153,7 @@ export class HtmlFetcher {
       $('meta[property="og:url"]').attr('content') ?? '',
     );
 
-    if (!isBlank(ogUrl)) {
+    if (!isBlank(ogUrl) && !ogUrl.includes('news.google.com')) {
       try {
         return new URL(ogUrl, fallbackUrl).toString();
       } catch {

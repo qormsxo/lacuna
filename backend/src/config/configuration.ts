@@ -67,5 +67,8 @@ export default () => ({
       10,
     ),
   },
+  logging: {
+    dir: process.env.LOG_DIR ?? undefined,
+  },
 });
 

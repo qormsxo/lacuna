@@ -10,6 +10,7 @@ import {
 } from '../dto/collect-result.dto';
 import { RssFeed, RssFeedItem, RssFeedLoader } from '../http/rss-feed-loader';
 import { collapseWhitespace, isBlank } from '../utils/text';
+import { decodeGoogleNewsArticleUrl } from '../utils/google-news-url';
 import { normalizeArticleUrl } from '../utils/url';
 import { CollectRequest, NewsCollector } from './news-collector';
 
@@ -106,12 +107,14 @@ export class GoogleNewsCollector implements NewsCollector {
       return null;
     }
 
-    const url = normalizeArticleUrl(item.link ?? '');
+    const normalized = normalizeArticleUrl(item.link ?? '');
 
-    if (url === null) {
+    if (normalized === null) {
       return null;
     }
 
+    // Cheap sync decode only. Modern CBMi tokens need batchexecute at crawl time.
+    const url = decodeGoogleNewsArticleUrl(normalized) ?? normalized;
     const parsed = this.splitTitleAndPublisher(item.title ?? '');
 
     return {

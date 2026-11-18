@@ -1,4 +1,6 @@
 import { ConfigService } from '@nestjs/config';
+import { ActivityFileLogger } from '../../common/logging/activity-file.logger';
+import { FailureFileLogger } from '../../common/logging/failure-file.logger';
 import { ArticleCrawlStore } from '../articles/article-crawl.store';
 import { CrawlStatus } from '../constants/crawl-status';
 import { NewsArticleEntity } from '../entities/news-article.entity';
@@ -9,6 +11,17 @@ import {
   BodyExtractionResult,
   ExtractedArticleBody,
 } from './extractors/extraction-types';
+
+const fakeActivityLogger = {
+  info: () => Promise.resolve(),
+  warn: () => Promise.resolve(),
+  error: () => Promise.resolve(),
+} as unknown as ActivityFileLogger;
+
+const fakeFailureLogger = {
+  append: () => Promise.resolve(),
+  readRecent: () => Promise.resolve([]),
+} as unknown as FailureFileLogger;
 
 class FakeHtmlFetcher extends HtmlFetcher {
   constructor(private readonly result: HtmlFetchResult) {
@@ -142,6 +155,11 @@ describe('CrawlService', () => {
         status: 'success',
         data: extracted,
       }),
+      fakeActivityLogger,
+      fakeFailureLogger,
+      {
+        resolve: async (url: string) => url,
+      } as never,
       new ConfigService({
         news: {
           crawlConcurrency: 1,
@@ -175,6 +193,11 @@ describe('CrawlService', () => {
         errorCode: 'INVALID_BODY',
         message: 'too short',
       }),
+      fakeActivityLogger,
+      fakeFailureLogger,
+      {
+        resolve: async (url: string) => url,
+      } as never,
       new ConfigService({
         news: {
           crawlConcurrency: 1,

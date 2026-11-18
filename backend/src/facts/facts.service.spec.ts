@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
+import { FailureFileLogger } from '../common/logging/failure-file.logger';
 import {
   LlmCompletionRequest,
   LlmCompletionResult,
@@ -151,11 +152,17 @@ function createRepos(
     },
   } as unknown as Repository<FactExtractionRunEntity>;
 
+  const failureLogger = {
+    append: () => Promise.resolve(),
+    readRecent: () => Promise.resolve([]),
+  } as unknown as FailureFileLogger;
+
   return new FactsService(
     articles,
     facts,
     runs,
     new FakeLlmProvider(llmContent),
+    failureLogger,
     new ConfigService({
       llm: {
         temperature: 0,

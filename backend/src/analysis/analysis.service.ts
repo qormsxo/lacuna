@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { ExtractedFactEntity } from '../facts/entities/extracted-fact.entity';
 import { LLM_PROVIDER } from '../llm/llm-provider';
 import type { LlmProvider } from '../llm/llm-provider';
@@ -146,6 +146,7 @@ export class AnalysisService {
         ],
         temperature: this.temperature,
         jsonMode: true,
+        context: { stage: 'analysis' },
       });
 
       const parsed = parseLlmAnalysisResponseJson(completion.content);
@@ -331,11 +332,13 @@ export class AnalysisService {
         );
       }
     } else {
-      facts = await this.facts.find({
-        where: { reviewStatus: 'accepted' },
-        order: { extractedAt: 'DESC' },
-        take: this.maxFacts,
-      });
+      facts = await this.loadUnusedAcceptedFacts(this.maxFacts);
+
+      if (facts.length === 0) {
+        throw new BadRequestException(
+          'No unused accepted facts left for analysis. Extract more facts first.',
+        );
+      }
     }
 
     if (facts.length > this.maxFacts) {
@@ -376,6 +379,45 @@ export class AnalysisService {
     }
 
     return bundled;
+  }
+
+  private async loadUnusedAcceptedFacts(
+    limit: number,
+  ): Promise<ExtractedFactEntity[]> {
+    const usedFactIds = await this.collectAnalyzedFactIds();
+
+    if (usedFactIds.size === 0) {
+      return this.facts.find({
+        where: { reviewStatus: 'accepted' },
+        order: { extractedAt: 'DESC' },
+        take: limit,
+      });
+    }
+
+    return this.facts.find({
+      where: {
+        reviewStatus: 'accepted',
+        id: Not(In([...usedFactIds])),
+      },
+      order: { extractedAt: 'DESC' },
+      take: limit,
+    });
+  }
+
+  private async collectAnalyzedFactIds(): Promise<Set<string>> {
+    const runs = await this.runs.find({
+      where: { status: 'completed', runType: 'full' },
+      select: ['factIds'],
+    });
+    const used = new Set<string>();
+
+    for (const run of runs) {
+      for (const factId of run.factIds) {
+        used.add(factId);
+      }
+    }
+
+    return used;
   }
 
   private buildRepublishHints(

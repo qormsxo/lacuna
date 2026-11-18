@@ -1,7 +1,14 @@
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { In, LessThanOrEqual, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
+import { FactRelationEntity } from '../../analysis/entities/fact-relation.entity';
+import { FactVerificationEntity } from '../../analysis/entities/fact-verification.entity';
+import { ExtractedFactEntity } from '../../facts/entities/extracted-fact.entity';
+import { FactExtractionRunEntity } from '../../facts/entities/fact-extraction-run.entity';
+import { HypothesisReevaluationEntity } from '../../hypotheses/entities/hypothesis-reevaluation.entity';
+import { HypothesisStatusHistoryEntity } from '../../hypotheses/entities/hypothesis-status-history.entity';
+import { HypothesisEntity } from '../../hypotheses/entities/hypothesis.entity';
 import { BodyStorageMode } from '../constants/body-storage';
 import { CrawlStatus, CRAWL_STATUSES } from '../constants/crawl-status';
 import { ArticleDto } from '../dto/article.dto';
@@ -20,6 +27,8 @@ export class ArticleService {
   constructor(
     @InjectRepository(NewsArticleEntity)
     private readonly articles: Repository<NewsArticleEntity>,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
     configService: ConfigService,
   ) {
     this.bodyStorageMode =
@@ -145,11 +154,39 @@ export class ArticleService {
   findMany(params: {
     crawlStatus?: CrawlStatus;
     category?: string;
+    source?: string;
+    q?: string;
     from?: Date;
     to?: Date;
     limit: number;
     offset?: number;
   }): Promise<NewsArticleEntity[]> {
+    return this.buildListQuery(params).getMany();
+  }
+
+  findManyPage(params: {
+    crawlStatus?: CrawlStatus;
+    category?: string;
+    source?: string;
+    q?: string;
+    from?: Date;
+    to?: Date;
+    limit: number;
+    offset?: number;
+  }): Promise<[NewsArticleEntity[], number]> {
+    return this.buildListQuery(params).getManyAndCount();
+  }
+
+  private buildListQuery(params: {
+    crawlStatus?: CrawlStatus;
+    category?: string;
+    source?: string;
+    q?: string;
+    from?: Date;
+    to?: Date;
+    limit: number;
+    offset?: number;
+  }) {
     const query = this.articles.createQueryBuilder('article');
 
     if (params.crawlStatus !== undefined) {
@@ -162,6 +199,19 @@ export class ArticleService {
       query.andWhere('article.category = :category', {
         category: params.category,
       });
+    }
+
+    if (params.source !== undefined) {
+      query.andWhere('article.source = :source', {
+        source: params.source,
+      });
+    }
+
+    if (params.q !== undefined && params.q.trim().length > 0) {
+      query.andWhere(
+        '(article.title ILIKE :q OR COALESCE(article.publisher, \'\') ILIKE :q)',
+        { q: `%${params.q.trim()}%` },
+      );
     }
 
     if (params.from !== undefined) {
@@ -179,24 +229,60 @@ export class ArticleService {
       query.skip(params.offset);
     }
 
-    return query.getMany();
+    return query;
   }
 
-  findCrawlCandidates(limit: number): Promise<NewsArticleEntity[]> {
+  findCrawlCandidates(
+    limit: number,
+    source?: string,
+    options?: { force?: boolean; category?: string },
+  ): Promise<NewsArticleEntity[]> {
     const now = new Date();
+    const force = options?.force === true;
+    const retryClause = force
+      ? 'article.crawlStatus = :retryWaiting'
+      : '(article.crawlStatus = :retryWaiting AND article.nextRetryAt <= :now)';
 
-    return this.articles.find({
-      where: [
-        { crawlStatus: 'pending', isDuplicate: false },
+    const query = this.articles
+      .createQueryBuilder('article')
+      .where('article.isDuplicate = false')
+      .andWhere(
+        `(
+          article.crawlStatus = :pending
+          OR ${retryClause}
+          OR (
+            article.source = 'google'
+            AND article.crawlStatus = :inaccessible
+            AND article.lastErrorCode = :accessDenied
+          )
+        )`,
         {
-          crawlStatus: 'retry_waiting',
-          nextRetryAt: LessThanOrEqual(now),
-          isDuplicate: false,
+          pending: 'pending',
+          retryWaiting: 'retry_waiting',
+          now,
+          inaccessible: 'inaccessible',
+          accessDenied: 'ACCESS_DENIED',
         },
-      ],
-      order: { collectedAt: 'ASC' },
-      take: limit,
-    });
+      );
+
+    if (source !== undefined) {
+      query.andWhere('article.source = :source', { source });
+    }
+
+    if (options?.category !== undefined) {
+      query.andWhere('article.category = :category', {
+        category: options.category,
+      });
+    }
+
+    return query
+      .orderBy(
+        `CASE WHEN article.source = 'google' THEN 1 ELSE 0 END`,
+        'ASC',
+      )
+      .addOrderBy('article.collectedAt', 'ASC')
+      .take(limit)
+      .getMany();
   }
 
   async markCrawling(ids: string[]): Promise<void> {
@@ -205,9 +291,13 @@ export class ArticleService {
     }
 
     await this.articles.update(
-      { id: In(ids), crawlStatus: In(['pending', 'retry_waiting']) },
+      {
+        id: In(ids),
+        crawlStatus: In(['pending', 'retry_waiting', 'inaccessible']),
+      },
       {
         crawlStatus: 'crawling',
+        nextRetryAt: null,
         lastError: null,
         lastErrorCode: null,
       },
@@ -344,6 +434,112 @@ export class ArticleService {
     }
 
     return null;
+  }
+
+  async deleteArticles(ids: string[]): Promise<{
+    deletedArticleCount: number;
+    deletedFactCount: number;
+    deletedHypothesisCount: number;
+  }> {
+    const uniqueIds = [...new Set(ids)];
+
+    if (uniqueIds.length === 0) {
+      return {
+        deletedArticleCount: 0,
+        deletedFactCount: 0,
+        deletedHypothesisCount: 0,
+      };
+    }
+
+    const existing = await this.articles.find({
+      where: { id: In(uniqueIds) },
+      select: ['id'],
+    });
+
+    if (existing.length === 0) {
+      throw new NotFoundException('No matching articles found to delete');
+    }
+
+    const articleIds = existing.map((item) => item.id);
+
+    return this.dataSource.transaction(async (manager) => {
+      const facts = await manager.find(ExtractedFactEntity, {
+        where: { articleId: In(articleIds) },
+        select: ['id'],
+      });
+      const factIds = facts.map((fact) => fact.id);
+
+      let deletedHypothesisCount = 0;
+
+      await manager.delete(HypothesisReevaluationEntity, {
+        sourceArticleId: In(articleIds),
+      });
+
+      if (factIds.length > 0) {
+        const hypotheses = await manager
+          .createQueryBuilder(HypothesisEntity, 'hypothesis')
+          .where(
+            `EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements_text(hypothesis."relatedFactIds") fact_id
+              WHERE fact_id = ANY(:factIds)
+            )`,
+            { factIds },
+          )
+          .getMany();
+
+        const hypothesisIds = hypotheses.map((item) => item.id);
+
+        if (hypothesisIds.length > 0) {
+          await manager.delete(HypothesisReevaluationEntity, {
+            hypothesisId: In(hypothesisIds),
+          });
+          await manager.delete(HypothesisStatusHistoryEntity, {
+            hypothesisId: In(hypothesisIds),
+          });
+          await manager.delete(HypothesisEntity, {
+            id: In(hypothesisIds),
+          });
+          deletedHypothesisCount = hypothesisIds.length;
+        }
+
+        await manager.delete(FactVerificationEntity, {
+          factId: In(factIds),
+        });
+        await manager
+          .createQueryBuilder()
+          .delete()
+          .from(FactRelationEntity)
+          .where('"factIdA" IN (:...factIds) OR "factIdB" IN (:...factIds)', {
+            factIds,
+          })
+          .execute();
+        await manager.delete(ExtractedFactEntity, {
+          id: In(factIds),
+        });
+      }
+
+      await manager.delete(FactExtractionRunEntity, {
+        articleId: In(articleIds),
+      });
+
+      await manager
+        .createQueryBuilder()
+        .update(NewsArticleEntity)
+        .set({ duplicateOfId: null, isDuplicate: false })
+        .where('"duplicateOfId" IN (:...articleIds)', { articleIds })
+        .execute();
+
+      await manager.delete(NewsArticleEntity, {
+        id: In(articleIds),
+      });
+
+      return {
+        deletedArticleCount: articleIds.length,
+        deletedFactCount: factIds.length,
+        deletedHypothesisCount,
+      };
+    });
   }
 
   private async findBodyDuplicate(

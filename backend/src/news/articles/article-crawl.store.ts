@@ -3,7 +3,11 @@ import { ExtractedArticleBody } from '../crawl/extractors/extraction-types';
 import { CrawlStatus } from '../constants/crawl-status';
 
 export type ArticleCrawlStore = {
-  findCrawlCandidates(limit: number): Promise<NewsArticleEntity[]>;
+  findCrawlCandidates(
+    limit: number,
+    source?: string,
+    options?: { force?: boolean; category?: string },
+  ): Promise<NewsArticleEntity[]>;
   findById(id: string): Promise<NewsArticleEntity | null>;
   markCrawling(ids: string[]): Promise<void>;
   markSuccess(
@@ -23,6 +27,8 @@ export type ArticleCrawlStore = {
   findMany(params: {
     crawlStatus?: CrawlStatus;
     category?: string;
+    source?: string;
+    q?: string;
     from?: Date;
     to?: Date;
     limit: number;
