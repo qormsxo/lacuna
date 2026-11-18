@@ -91,8 +91,6 @@ npm test
 
 e2e 테스트는 PostgreSQL이 실행 중이어야 합니다. 읽기 전용 요청만 보내고, `STALE_RECOVERY_ON_BOOT=false`로 부팅해 개발 서버의 진행 중 작업을 건드리지 않습니다.
 
-GitHub Actions(`.github/workflows/ci.yml`)가 push/PR마다 백엔드 타입체크·단위 테스트·빌드·빈 DB 마이그레이션·e2e와 프론트 빌드를 돌립니다.
-
 ```bash
 cd backend
 npm run test:e2e
