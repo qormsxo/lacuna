@@ -21,6 +21,52 @@ type OpenAiChatResponse = {
   };
 };
 
+const TRANSIENT_ERROR_CODES = new Set([
+  'RATE_LIMIT',
+  'SERVER_ERROR',
+  'TIMEOUT_NETWORK',
+  'EMPTY_RESPONSE',
+]);
+
+const MAX_RETRY_AFTER_MS = 60_000;
+
+export class LlmRequestError extends Error {
+  readonly errorCode: string;
+
+  constructor(
+    message: string,
+    readonly statusCode: number | undefined,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.errorCode = classifyLlmError(message, statusCode).errorCode;
+  }
+}
+
+export function parseRetryAfter(raw: unknown): number | undefined {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return undefined;
+  }
+
+  const seconds = Number(raw);
+
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+  }
+
+  const date = Date.parse(raw);
+
+  if (Number.isNaN(date)) {
+    return undefined;
+  }
+
+  return Math.min(Math.max(0, date - Date.now()), MAX_RETRY_AFTER_MS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 @Injectable()
 export class OpenAiCompatibleLlmProvider implements LlmProvider {
   private readonly logger = new Logger(OpenAiCompatibleLlmProvider.name);
@@ -28,6 +74,8 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
   private readonly baseUrl: string;
   private readonly model: string;
   private readonly timeoutMs: number;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
 
   constructor(
     configService: ConfigService,
@@ -40,9 +88,45 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
     this.model =
       configService.get<string>('llm.model') ?? 'gemini-3.1-flash-lite';
     this.timeoutMs = configService.get<number>('llm.timeoutMs') ?? 60000;
+    this.maxRetries = configService.get<number>('llm.maxRetries') ?? 2;
+    this.retryBaseDelayMs =
+      configService.get<number>('llm.retryBaseDelayMs') ?? 2000;
   }
 
-  async complete(
+  /**
+   * 429·5xx·타임아웃·빈 응답만 지수 백오프로 재시도한다.
+   * 인증/스키마 오류는 재시도해도 결과가 같으므로 바로 실패시킨다.
+   */
+  async complete(request: LlmCompletionRequest): Promise<LlmCompletionResult> {
+    let attempt = 0;
+
+    for (;;) {
+      try {
+        return await this.completeOnce(request);
+      } catch (error) {
+        if (!(error instanceof LlmRequestError)) {
+          throw error;
+        }
+
+        const transient = TRANSIENT_ERROR_CODES.has(error.errorCode);
+
+        if (!transient || attempt >= this.maxRetries) {
+          await this.logFailure(error.message, request, error.statusCode);
+          throw new Error(error.message);
+        }
+
+        const delayMs =
+          error.retryAfterMs ?? this.retryBaseDelayMs * 2 ** attempt;
+        attempt += 1;
+        this.logger.warn(
+          `LLM ${error.errorCode} (${error.message}); retry ${attempt}/${this.maxRetries} in ${delayMs}ms`,
+        );
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  private async completeOnce(
     request: LlmCompletionRequest,
   ): Promise<LlmCompletionResult> {
     if (this.apiKey.trim().length === 0) {
@@ -75,10 +159,12 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
 
       const content = response.data.choices?.[0]?.message?.content;
 
-      if (content === undefined || content === null || content.trim().length === 0) {
-        const emptyError = new Error('LLM returned empty content');
-        await this.logFailure(emptyError.message, request, undefined);
-        throw emptyError;
+      if (
+        content === undefined ||
+        content === null ||
+        content.trim().length === 0
+      ) {
+        throw new LlmRequestError('LLM returned empty content', undefined);
       }
 
       return {
@@ -87,15 +173,17 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
       };
     } catch (error) {
       if (error instanceof AxiosError) {
-        const apiMessage = error.response?.data as OpenAiChatResponse | undefined;
+        const apiMessage = error.response?.data as
+          OpenAiChatResponse | undefined;
         const detail =
-          apiMessage?.error?.message ??
-          error.message ??
-          'LLM request failed';
+          apiMessage?.error?.message ?? error.message ?? 'LLM request failed';
 
         this.logger.error(`LLM request failed: ${detail}`);
-        await this.logFailure(detail, request, error.response?.status);
-        throw new Error(detail);
+        throw new LlmRequestError(
+          detail,
+          error.response?.status,
+          parseRetryAfter(error.response?.headers?.['retry-after']),
+        );
       }
 
       throw error;
